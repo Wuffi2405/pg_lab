@@ -28,6 +28,7 @@
 	  zlib
 	  antlr
 	  zulu23
+	  openssl
 	];
       };
     };
