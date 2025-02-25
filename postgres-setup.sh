@@ -126,8 +126,8 @@ cd $PG_TARGET_DIR
 
 
 echo ".. Installing pg_lab extension"
-mkdir -p $WD/pg_lab/build
-cd $WD/pg_lab/build
+mkdir -p $WD/pg_lab/hints/build
+cd $WD/pg_lab/hints/build
 PG_INSTALL_DIR=$PG_BUILD_DIR cmake ..
 make -j $MAKE_CORES
 
