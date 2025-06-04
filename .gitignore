@@ -79,3 +79,4 @@ pg_lab/hints/*
 
 #ues testdata stuff
 pg_lab/ues/SQLTestData/imdb_data/*
+pg_lab/ues/Queries/*

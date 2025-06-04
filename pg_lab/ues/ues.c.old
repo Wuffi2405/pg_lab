@@ -1,0 +1,177 @@
+#include <limits.h>
+#include <time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "postgres.h"
+#include "nodes/nodes.h"
+#include "nodes/primnodes.h"
+#include "nodes/print.h"
+#include "optimizer/planner.h"
+#include "optimizer/paths.h"
+#include "parser/parsetree.h"
+#include "storage/bufmgr.h"
+#include "storage/lockdefs.h"
+#include "utils/elog.h"
+#include "utils/guc.h"
+#include "access/relation.h"
+#include "fmgr.h"
+#include "storage/bufmgr.h"
+#include "storage/smgr.h"
+#include "utils/rel.h"
+#include "utils/relcache.h"
+
+
+PG_MODULE_MAGIC;
+
+char*
+reloptkind_to_string(RelOptKind rlk){
+	switch (rlk)
+	{
+	case RELOPT_BASEREL:
+		return "BASEREL";
+		break;
+	case RELOPT_JOINREL:
+		return "JOINREL";
+		break;
+
+	default:
+		return "ERROR";
+		break;
+	}
+}
+
+static RelOptInfo *join_search_hook_ues(PlannerInfo *root, int levels_needed, List *initial_rels){
+	
+	elog(NOTICE, "Welcome from join_search_hook");
+
+	FromExpr *parsetree = root->parse->jointree;
+	ListCell *test = parsetree->fromlist->elements;
+	FromExpr *element = test->ptr_value;
+
+	RelOptInfo optinfo;
+	RestrictInfo info;
+	RangeTblRef ref;
+	SpecialJoinInfo jinfo;
+	
+	elog(INFO, "Elements: %d", initial_rels->length);
+
+	ListCell* cell;
+	foreach(cell, initial_rels){
+		Node* irnode = lfirst(cell);
+		if(IsA(irnode, RelOptInfo)){
+			elog(INFO, "RelOptInfo: %s", reloptkind_to_string(((RelOptInfo*)irnode)->reloptkind));
+			// elog(ERROR, "%d", pprint(irnode));
+			// elog_node_display(1, "TEST: ", irnode, true);
+			elog(INFO, "NODETYPE: %d", irnode->type);
+		}else{
+			// elog(ERROR, irnode->type);
+		}
+
+	}
+	elog(INFO, "-------");
+
+	// int memoryoffset = 0;
+	// for (int st = 0; st < subtreescardinality; st++){
+	// 	Node* subtree = (Node*) linitial(parsetree->fromlist);
+
+	// 	switch (subtree->type){
+	// 		case T_FromExpr:
+	// 			memoryoffset += sizeof(FromExpr);
+	// 			elog(INFO, "FromExpr");
+	// 			break;
+	// 		case T_JoinExpr:
+	// 			memoryoffset += sizeof(JoinExpr);
+	// 			elog(INFO, "JoinExpr");
+	// 			break;
+	// 		case T_RangeTblRef:
+	// 			memoryoffset += sizeof(RangeTblRef);
+	// 			elog(INFO, "RangeTblRef");
+	// 			break;
+	// 		default:
+	// 			elog(INFO, "Lol, %d", subtree->type);
+	// 			//continue;
+	// 	}
+		// build_joinrel_restrictlist
+		// build_joinrel
+		// SpecialJoinInfo
+	// }
+
+	// elog(INFO, "Länge FromExpr jointree: %d", jointreestart->fromlist->length);
+
+	// elog(INFO, "SpecialJoinInfo (?)");
+	// ListCell* lc;
+	// foreach(lc, root->join_info_list){
+	// 	SpecialJoinInfo *info = (SpecialJoinInfo *) lfirst(lc);
+	// 	elog(INFO, "JoinType: %d", info->jointype);
+	// }
+
+	// JoinExpr *test_join_expr;
+
+	// if (IsA(linitial(jointree->fromlist), JoinExpr)){
+	// 	JoinExpr* jnexpr = (JoinExpr*) linitial(jointree->fromlist);
+	// 	elog(NOTICE, "LOOOOOOOOOOOOOOOOOOOOOL");
+	// }
+
+	//elog(NOTICE, "TEST %d", element->type);
+
+	// standard_make_join_rel
+	//build_joinrellist
+	//größere Query nehmen zum testen: PostBOUND
+	//zusammenfassung Postgres Optimierer, auch gut für die schriftliche Arbeit
+	// Shift F12 für calls
+
+
+
+	//list_make1
+	/*
+		initial rels sind nur die rels, die Art der Joins stehen in der PlannerInfo
+	*/
+	
+
+
+
+	//--------
+
+
+	/*
+	if (no outer joins): ues_join_search;
+	else if (prev_hook): andere Hook
+	else if (geqo): geqo
+	else: standard_join_search
+	
+	
+	*/
+
+	return standard_join_search(root, levels_needed, initial_rels);
+}
+
+static RelOptInfo *ues_join_search(PlannerInfo *root, int levels_needed, List *initial_rels){
+	/*
+		loop: initial_rels
+			initial_rels[0] quasi joinen mit initial_rels
+			alle upper bounds berechnen -> best case: upper bound am kleinsten
+			
+
+		1. über initial_rels iterieren und rels auslesen
+		2. für jede rel die Größe und häufigstes Element bestimmen
+		3. ein Element von initial_rels versuchen gegen initial_rels zu joinen
+			a. ggfs. JoinQuals berücksichtigen
+		5. provisorischen jointree bauen
+		----
+		6. Enumerate Teil von UES anwenden
+		7. Ergebnis ausgeben
+	
+	*/
+}
+
+
+/* Module load function */
+void
+_PG_init(void)
+{
+    elog(NOTICE, "Hello from UES!\n");
+
+
+	join_search_hook = join_search_hook_ues;
+}
