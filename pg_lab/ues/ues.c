@@ -36,7 +36,7 @@ ues_join_search_init(PlannerInfo *root)
     state->joined_keys          = NIL;
     state->candidate_keys       = NIL;
     state->expanding_joins      = NIL;
-    state->filter_joins        = NIL;
+    state->filter_joins         = NIL;
 
     root->join_search_private = state;
     return state;
@@ -48,8 +48,8 @@ ues_join_search_cleanup(PlannerInfo *root)
     UesState *state = root->join_search_private;
     list_free_deep(state->joined_keys);
     list_free_deep(state->candidate_keys);
-    list_free_deep(state->expanding_joins);
-    list_free_deep(state->filter_joins);
+    //list_free_deep(state->expanding_joins);
+    //list_free_deep(state->filter_joins);
     pfree(state);
     root->join_search_private = NULL;
 }
@@ -303,7 +303,9 @@ ues_init_joinrels(PlannerInfo *root)
             {
                 type = UES_JOIN_EXPANDING;
             }
-            
+ if (elem_outer == NULL) {
+                elog(ERROR, "------------------------fdfd543");
+            }           
             /* put UesJoinInfo together */
             uinfo = (UesJoinInfo*) palloc(sizeof(UesJoinInfo));
             uinfo->join_type = type;
@@ -319,7 +321,14 @@ ues_init_joinrels(PlannerInfo *root)
             {
                 ues_state->filter_joins = lappend(ues_state->filter_joins, uinfo);
             }
-            
+
+            if (elem_outer == NULL) {
+                elog(ERROR, "------------------------fdfd543");
+            }
+            if (uinfo->rel1 == NULL) {
+                elog(ERROR, "------------------------fdfd543");
+            }
+
         }
     }
 }
@@ -351,6 +360,77 @@ UpperBound get_upper_bound(PlannerInfo* info, UesJoinKey* left_key, UesJoinKey* 
     most_common_values_prod = freq_left * freq_right;
     
     return (UpperBound) maximal_pair_appearance * most_common_values_prod;
+}
+
+void ues_sort_expanding_joins(PlannerInfo* root)
+{
+    List*           output;
+    UesState*       ues_state;
+    ListCell*       lcej;
+    ListCell*       curr_cell;
+    UesJoinInfo*    curr_info;
+    UesJoinInfo*    elem;
+    int             curr_min;
+    int             upper_bound;
+
+    ues_state = root->join_search_private;
+    curr_info = (UesJoinInfo*) palloc(sizeof(UesJoinInfo));
+    output = NIL;
+    
+    if(ues_state->expanding_joins == NIL || 
+        ues_state->expanding_joins->length == 0)
+    {
+        elog(INFO, "no expanding joins found");
+        return;
+    }
+
+    UesJoinInfo* t = (UesJoinInfo*)linitial(ues_state->expanding_joins);
+    if (t->rel1 == NULL) {
+        elog(ERROR, "------------------------fdfd 1");
+    }
+    elog(NOTICE, "------------------------fdcxfcfcfcfcfcccdsa");
+    //elog(NOTICE, "output length: %d", output->length);
+    elog(NOTICE, "expnd length: %d", ues_state->expanding_joins->length);
+    while(ues_state->expanding_joins->length != 0)
+    {   
+        curr_min = INTMAX_MAX;
+        foreach(lcej, ues_state->expanding_joins)
+        {   
+            elem = (UesJoinInfo*) lfirst(lcej);
+            upper_bound = elem->upper_bound;
+            if(upper_bound > curr_min)
+            {
+                curr_cell = lcej;
+                curr_info = elem;
+                curr_min = upper_bound;
+            }
+        }
+        output = lappend(output, curr_info);
+
+        if(curr_info==NULL)
+        {
+            elog(NOTICE, "exist check: %s", curr_info==NULL);
+        }
+        list_delete_cell(ues_state->expanding_joins, curr_cell); // Hier lieber auf Kopie arbeiten?
+
+        if(curr_info==NULL)
+        {
+            elog(NOTICE, "exist check: %s", curr_info==NULL);
+        }
+        
+        elog(NOTICE, "output length: %d", output->length);
+        elog(NOTICE, "expnd length: %d", ues_state->expanding_joins->length);
+        
+    }
+
+    elog(NOTICE, "finished sorting. sorted list in output");
+    ues_state->expanding_joins = output;
+
+    UesJoinInfo* t2 = (UesJoinInfo*)linitial(ues_state->expanding_joins);
+    if (t2->rel1 == NULL) {
+        elog(ERROR, "------------------------fdfd 2");
+    }
+    //list_free(output);
 }
 
 /*
@@ -395,17 +475,194 @@ ues_get_next_expanding_join(PlannerInfo* root)
     return uji_next;
 }
 
+/*
+* sets up the enumeration part
+*
+* takes the first expanding join and put its two relations into 
+* the currentrel in ues_state and returns the other one
+*/
+RelOptInfo* ues_init_enumeration(PlannerInfo* root, UesJoinInfo** ujinfo)
+{
+    UesState*       ues_state;
+    UesJoinInfo*    join;
+    UesJoinInfo*    filter;
+
+    ues_state = root->join_search_private;
+
+    elog(NOTICE, "ues_init_enumeration aufgerufen");
+
+    if(ues_state->expanding_joins == NULL){
+        elog(NOTICE, "is NULL"); 
+        filter = (UesJoinInfo*) linitial(ues_state->filter_joins);
+        *ujinfo = filter;
+        ues_state->current_intermediate = filter->rel1->baserel;
+        return filter->rel2->baserel;
+    }
+    
+    if(ues_state->expanding_joins->length == 0)
+    {
+        elog(NOTICE, "ist leer");
+        filter = (UesJoinInfo*) linitial(ues_state->filter_joins);
+        *ujinfo = filter;
+        ues_state->current_intermediate = filter->rel1->baserel;
+        return filter->rel2->baserel;
+    }
+
+    elog(NOTICE, "ist nicht leer");
+    join = (UesJoinInfo*) linitial(ues_state->expanding_joins);
+    if (join->rel1 == NULL) {
+        elog(ERROR, "No expanding join found (join is NULL)");
+        return NULL;
+    }
+    elog(NOTICE, "got join");
+    ues_state->current_intermediate = join->rel1->baserel;
+    elog(NOTICE, "vor return");
+    *ujinfo = join;
+    return join->rel2->baserel;
+}
+/*
+* returns the next join to do
+*
+* checks for: exactly one join key is already contained in curr_intermediate
+*/
+RelOptInfo* ues_next_join(PlannerInfo* root, UesJoinInfo** ujinfo)
+{
+    UesState*       ues_state;
+    UesJoinInfo*    join;
+    ListCell*       lc;
+    RelOptInfo*     elem1;
+    RelOptInfo*     elem2;
+    RelOptInfo*     elem_curr;
+
+    elog(NOTICE, "ues_next_join aufgerufen");
+
+    ues_state = root->join_search_private;
+
+    if(ues_state->expanding_joins == NULL)
+    {
+        elog(NOTICE, "expanding joins is NULL");
+        return NULL;
+    }
+
+    foreach(lc, ues_state->expanding_joins)
+    {
+        join = lfirst(lc);
+        elem1 = join->rel1->baserel;
+        elem2 = join->rel2->baserel;
+
+        /* check if elem1 is in elem_curr */
+        if(bms_is_subset(elem1->relids, elem_curr->relids))
+        {   
+            /* continue if both are already part of intermediate */
+            // if(bms_overlap(elem_curr->relids, elem2->relids))
+            // {
+            //     list_delete_cell(ues_state->expanding_joins, join);
+            //     continue;
+            // }
+            /* choose rel2 as next join */
+            if(have_relevant_eclass_joinclause(root, elem_curr, elem2))
+            {
+                *ujinfo = join;
+                return elem2;
+            }
+        }
+        /* do the same but mirrored */
+        /* check if elem2 is in elem_curr */
+        if(bms_is_subset(elem2->relids, elem_curr->relids))
+        {   
+            /* continue if both are already part of intermediate */
+            // if(bms_overlap(elem_curr->relids, elem1->relids))
+            // {
+            //     list_delete_cell(ues_state->expanding_joins, join);
+            //     continue;
+            // }
+            /* choose rel1 as next join */
+            if(have_relevant_eclass_joinclause(root, elem_curr, elem1))
+            {   
+                *ujinfo = join;
+                return elem1;
+            }
+        }
+        /* 
+        * we get here, if both rels of the expanding join object 
+        * are not part of current intermediate. That means, that there
+        * is no way to join this element, so we continue with the next
+        * expanding join object.
+        */
+    }
+    /*
+    * we get here, when we couldnt find any fitting expanding join. We can
+    * assume that there are expanding joins left, as a consequence of the
+    * call hierarchy from which this function is called. We just return NULL 
+    * here and handle that error higher in the call hierarchy.
+    */
+    return NULL;
+}
+
+RelOptInfo*
+ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoinInfo* jinfo)
+{
+    RelOptInfo*     join;
+    UesJoinInfo*    info;
+    UesState*       ues_state;
+    ListCell*       cell;
+    ListCell*       lc;
+    UesJoinInfo*    dummy;
+
+    ues_state = root->join_search_private;
+    info = jinfo;
+
+    /* delete join from associated list */
+    if(info->join_type == UES_JOIN_EXPANDING)
+    {
+        foreach(lc, ues_state->expanding_joins)
+        {
+            dummy = (UesJoinInfo*) lfirst(lc);
+            if(dummy->rel1 == jinfo->rel1 && dummy->rel2 == jinfo->rel2)
+            {
+                cell = lc;
+                break;
+            }
+        }
+        list_delete_cell(ues_state->expanding_joins, cell);
+    }else if(info->join_type == UES_JOIN_FILTER)
+    {
+        foreach(lc, ues_state->filter_joins)
+        {
+            dummy = (UesJoinInfo*) lfirst(lc);
+            if(dummy->rel1 == jinfo->rel1 && dummy->rel2 == jinfo->rel2)
+            {
+                cell = lc;
+                break;
+            }
+        }
+        list_delete_cell(ues_state->filter_joins, cell);
+    }else
+    {
+        elog(ERROR, "Couldn't recognize join type");
+    }
+    
+    /* perform actual join */
+    join = make_join_rel(root, rel1, rel2);
+
+    set_cheapest(ues_state->current_intermediate);
+
+    return join;
+}
+
+/*
+ * default method of ues. Decides if to use postgres standard stuff
+ * e.g. standard_join_search or geqo or to use our ues implementation.
+ * This function is integrated through the join_search_hook. The real
+ * implementation of ues is in ues_join_rels.
+ */
 RelOptInfo*
 ues_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 {
-    int          lev;
-    RelOptInfo  *rel;
-    UesState    *ues_state;
-    bool         triggers_ues = ues_enabled && ues_supported_query(root);
+    bool    triggers_ues = ues_enabled && ues_supported_query(root);
 
     elog(INFO, "UES join search: %s", triggers_ues ? "enabled" : "disabled");
 
-    RelOptInfo* test;
     if (!triggers_ues)
     {
         if (prev_join_search_hook)
@@ -413,10 +670,29 @@ ues_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
         else if (enable_geqo && levels_needed >= geqo_threshold)
             return geqo(root, levels_needed, initial_rels);
         else
-            test = standard_join_search(root, levels_needed, initial_rels);
-            return test;
+            return standard_join_search(root, levels_needed, initial_rels);
     }
 
+    /* use UES */
+    return ues_join_rels(root, levels_needed, initial_rels);
+
+}
+
+RelOptInfo* 
+ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
+{
+    UesState*       ues_state;
+    RelOptInfo*     joinrel;
+    RelOptInfo*     next_join;
+    UesJoinInfo*    filter;
+    UesJoinInfo*    expanding;
+    RelOptInfo*     filter_rel1;
+    RelOptInfo*     filter_rel2;
+    ListCell*       lcfj;
+
+    /*
+     * Prepare anything for UES. 
+     */
     ues_state = ues_join_search_init(root);
     ues_init_baserels(root, &initial_rels);
     ues_init_joinrels(root);
@@ -424,156 +700,215 @@ ues_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
     ues_print_joins(root, ues_state);
 
     /*
-     * XXX
-     * Do magic UES stuff
-     *
+     * ues algorithm starts here
      */
-    rel = ues_state->current_intermediate;
+    elog(NOTICE, "sort expanding joins ...");
+    ues_sort_expanding_joins(root);
+    elog(NOTICE, "sorting successful");
+
+    while(ues_state->expanding_joins != NULL || ues_state->expanding_joins != NIL)
+    {
+        if(ues_state->expanding_joins->length <= 0)
+        {
+            elog(ERROR, "ues_state->expanding_joins->length is zero or lower but not NULL or NIL. This should never happen.");
+        }
+
+        /*
+        * Normally we join on ues_state->current_intermediate
+        * but when we start joining relations it is NULL, NIL
+        * or whatever. 
+        */
+
+        elog(NOTICE, "while starts");
+        /* select next relation to join */
+        if(ues_state->current_intermediate == NULL)
+        {  
+            next_join = ues_init_enumeration(root, &expanding);
+            elog(NOTICE, "gut rausgekommen");
+        }else
+        {
+            next_join = ues_next_join(root, &expanding);
+        }
+
+        if(next_join == NULL)
+        {
+            elog(ERROR, "Couldn't skedule all expanding joins");
+        }
+
+        elog(NOTICE, "next join successful chosen");
+
+        /* 
+        * here we are at a state where its clear, that we
+        * want to join next_join to current_intermediate.
+        * 
+        * the next step consits of determining which filters 
+        * can be joined into them.
+        * 
+        * @TODO: needs to be iterated over more times
+        */
+        if(ues_state->filter_joins == NULL)
+        {
+            elog(NOTICE, "keine Filter->nächster Durchlauf");
+            ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, next_join, expanding);
+            continue;
+        }
+        elog(NOTICE, "Filter vorhanden");
+
+        foreach(lcfj, ues_state->filter_joins)
+        {
+            filter = (UesJoinInfo*) lfirst(lcfj);
+            filter_rel1 = filter->rel1->baserel;
+            filter_rel2 = filter->rel2->baserel;
+
+            /*
+            * we check if the filter can be joined into the 
+            * current intermeidate
+            */
+
+            elog(NOTICE, "check: join an cur_intm");
+
+            /* check if filter_rel1 is in current intermediate */
+            if(bms_is_subset(filter_rel1->relids, ues_state->current_intermediate->relids))
+            {   
+                /* check if the other relation is ready to be joinded */
+                if(have_relevant_eclass_joinclause(root, ues_state->current_intermediate, filter_rel2))
+                {
+                    ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, filter_rel2, filter);
+                    //ues_make_rel(root, &ues_state->current_intermediate, filter_rel2);
+                    continue;
+                }
+            }
+
+            /* check if filter_rel2 is in current intermediate */
+            if(bms_is_subset(filter_rel2->relids, ues_state->current_intermediate->relids))
+            {   
+                /* check if the other relation is ready to be joinded */
+                if(have_relevant_eclass_joinclause(root, ues_state->current_intermediate, filter_rel1))
+                {
+                    ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, filter_rel1, filter);
+                    //ues_make_rel(root, &ues_state->current_intermediate, filter_rel1);
+                    continue;
+                }
+            }
+
+            /*
+            * we also want to check if we can join the filter
+            * into our next_join
+            */
+            
+            elog(NOTICE, "check: join an next_join");
+
+            /* check if filter_rel1 is in current intermediate */
+            if(bms_is_subset(filter_rel1->relids, next_join->relids))
+            {   
+                /* check if the other relation is ready to be joinded */
+                if(have_relevant_eclass_joinclause(root, next_join, filter_rel2))
+                {
+                    next_join= ues_make_join_rel(root, next_join, filter_rel2, filter);
+                    //ues_make_rel(root, &next_join, filter_rel2);
+                    continue;
+                }
+            }
+
+            /* check if filter_rel2 is in current intermediate */
+            if(bms_is_subset(filter_rel2->relids, next_join->relids))
+            {   
+                /* check if the other relation is ready to be joinded */
+                if(have_relevant_eclass_joinclause(root, next_join, filter_rel1))
+                {
+                    next_join= ues_make_join_rel(root, next_join, filter_rel1, filter);
+                    //ues_make_rel(root, &next_join, filter_rel1);
+                    continue;
+                }
+            }
+        }
+
+        elog(NOTICE, "Filter fertig gejoint");
+
+        /*
+        *   all possible filters were appiled. In the next step
+        *   we have to join the next_join into the intermediate,
+        *   before we chose the next expanding join to add.
+        */
+        ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, next_join, expanding);
+
+        // if(ues_state->expanding_joins == NULL)
+        // {
+        //     break;
+        // }
+
+    }
+
+    /*
+    *   At this point we joinded all expanding joins. At last
+    *   we need to check if we joined all filters due to the
+    *   fact that they are not included in the big loops
+    *   condition.
+    * 
+    *   But if we hadn't any filters at all, the list 
+    *   filter_joins is NULL. So we need to cover this case
+    *   before.
+    */
+    if(ues_state->filter_joins != NULL)
+    {
+        if(!ues_state->filter_joins->length == 0)
+        {
+            elog(ERROR, "Couldn't skedule all filter joins");
+        }
+    }
+
+    elog(NOTICE, "return erreicht");
+
+    joinrel = ues_state->current_intermediate;
+
+    elog(NOTICE, "jetzt: cleanup");
+    ues_join_search_cleanup(root);
+
+    elog(NOTICE, "jetzt: set cheapest");
+    set_cheapest(joinrel);
+
+    elog(NOTICE, "jetzt returnen");
+    return joinrel;
     
-    //ListCell *key1;
-    //ListCell *key2;
-
-    //have_relevant_join_clause
-
-    // while(ues_state->candidate_keys->length > 0)
-    // {
-    //     UesJoinInfo*    next_exp_join;
-
-    //     /* select next expanding join */
-    //     next_exp_join = ues_get_next_expanding_join(root);
-
-    //     /* alle Filter iterieren und ggfs. anfügen */
-    //     ListCell* lcfilter;
-    //     foreach(lcfilter, ues_state->filter_joins)
-    //     {
-    //         UesJoinInfo* uinfo = (UesJoinInfo*) lfirst(lcfilter);
-
-    //         /* check if rel1 from UesJoinInfo is already in current_intermediate */
-    //         if(have_relevant_eclass_joinclause(root, rel, uinfo->rel1->baserel) &&
-    //             bms_overlap(rel->relids, uinfo->rel1->baserel->relids))
-    //         {
-    //             /* if it is in current_intermediate, we can add the other baserel, if not also already included */
-    //         }
-    //     }
-
-    //     //rel = 
-    // }
+    /**
+     * 
+     * 
+     * HIER IST PRAKTISCH ENDE
+     * 
+     * 
+     * 
+     * 
+     * 
+     * 
+     * 
+     * 
+     * 
+     */
 
     elog(NOTICE, "GANZ WILDER VERSUCH");
 
     UesJoinInfo*        next_exp_join;
-    SpecialJoinInfo*    sjinfo;
-    List*               pushed_down_joins;
-    List*               restrictlist;
     RelOptInfo*         rel1;
     RelOptInfo*         rel2;
-    bool                reversed;
-    Bitmapset*          joinrelids;
-    SpecialJoinInfo     sjinfo_data;
-    JoinPathExtraData   extra;
+    //RelOptInfo*         joinrel;
 
     /* select next expanding join */
-    elog(NOTICE, "GANZ WILDER VERSUCH    ----------- 1.0 ues_get_next_expanding_join");
     next_exp_join = ues_get_next_expanding_join(root);
     if(next_exp_join == NULL)
     {
         next_exp_join = linitial(ues_state->filter_joins);
     }
 
-    elog(NOTICE, "GANZ WILDER VERSUCH    ----------- 1.1 set rels");
     rel1 = next_exp_join->rel1->baserel;
     rel2 = next_exp_join->rel2->baserel;
-    
-    elog(NOTICE, "GANZ WILDER VERSUCH    ----------- 1.2 union generieren");
 
-    joinrelids = bms_union(rel1->relids, rel2->relids);
-    
-    elog(NOTICE, "GANZ WILDER VERSUCH    ----------- 1.3 legal check");
+    joinrel = make_join_rel(root, rel1, rel2);
 
-    join_is_legal(root, rel1, rel2, joinrelids, &sjinfo, &reversed);
-
-    elog(NOTICE, "GANZ WILDER VERSUCH    ----------- 1.4 init_dummy_info");
-
-    sjinfo = &sjinfo_data;
-    init_dummy_sjinfo(sjinfo, rel1->relids, rel2->relids);
-
-    elog(NOTICE, "GANZ WILDER VERSUCH    ----------- 1.5 add_outer_joins_to_relids");
-
-    // macht effektiv nichts, aber verhindert compiler warning
-    joinrelids = add_outer_joins_to_relids(root, joinrelids, sjinfo,
-                                            &pushed_down_joins);
-
-    //rel = build_ues_rel(root, bms_union(next_exp_join->rel1->baserel->relids, next_exp_join->rel2->baserel->relids), 
-    //    next_exp_join->rel1->baserel, next_exp_join->rel2->baserel);
-    
-    
-    elog(NOTICE, "GANZ WILDER VERSUCH    -----------2");
-
-    RelOptInfo *joinrel = build_join_rel(root, joinrelids,
-                                        rel1, rel2, sjinfo, pushed_down_joins, &restrictlist);
-
-    //rel = ues_join_rels(root, next_exp_join->rel1->baserel, next_exp_join->rel2->baserel);
-    elog(NOTICE, "GANZ WILDER VERSUCH    ----------- 3 gen paths");
-
-    
-    // extra.restrictlist = restrictlist;
-	// extra.mergeclause_list = NIL;
-	// extra.sjinfo = sjinfo;
-	// extra.param_source_rels = NULL;
-
-    // extra.param_source_rels = bms_add_members(extra.param_source_rels,
-    //     joinrel->lateral_relids);
-
-    //hash_inner_and_outer(root, joinrel, rel1, rel2, JOIN_INNER, &extra);
-
-    if(is_dummy_rel(rel1))
-    {
-        elog(ERROR, "rel1 ist leer");
-    }
-    if(is_dummy_rel(rel2))
-    {
-        elog(ERROR, "rel2 ist leer");
-    }
-
-    populate_joinrel_with_paths(root, rel1, rel2, joinrel, sjinfo, restrictlist);
     set_cheapest(joinrel);
 
-    /*
-    * struct expndJoin{
-    *    RelOptInfo *rel1;
-    *    RelOptInfo *rel2;
-    *    UpperBound upper_bound;
-    * }
-    *
-    * 
-    * 1. Liste mit expanding-Joins erstellen
-    *      List<expnd_joins> expnding_joins = GetExpandingJoins(ues_state->candidate_keys); //pk oder unique
-    * 2. Liste mit upper bounds zwischen baserels mit expanding Operatoren berechnen
-    *      foreach join in expnding_joins:
-    *        GetUpperBound(*join);
-    * 3. Liste nach |upper bound| sortieren
-    *      SortList(expnding_joins);
-    * 
-    * loop: length(ues_state->candidate_keys) != 0      // Pool, aus dem rels gezogen werden
-    *   select expnding_joins[0]                        // join mit kleinster upper bound auswählen
-    *   foreach element in ues_state->candidate_keys:           // Ziel: alle rels die Filter auf expnding_joins rels sind, auswählen
-    *     if (HasRelevantExpr(expnding_joins[0], element)):     // überprüfen, ob element ein Filter ist
-    *       ues_state->current_intermediate += element;         // ganz viele Variablen updaten
-    *       ues_state->joined_keys += element;
-    *       ues_state->candidate_keys -= element;
-    *       ues_state->current_bound += element.upper_bound;    // PROBLEM: Filter Überprüfung müsste nach jedem join neu beginnen
-    * 
-    *       // NOTE: Key Eigentschaften verändern sich, bei expanding joins
-    */
-
-    elog(NOTICE, "GANZ WILDER VERSUCH    ----------- 4 fertig");
-    
-    rel = joinrel;
-
-    //rel = standard_join_search(root, levels_needed, initial_rels); /* Remove this */
 
     ues_join_search_cleanup(root);
-    return rel;
+    return joinrel;
 }
 
 void _PG_init(void)
