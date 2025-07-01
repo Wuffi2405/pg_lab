@@ -906,46 +906,6 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
 
     elog(NOTICE, "ues finished. return into postgres code");
     return joinrel;
-    
-    /**
-     * 
-     * 
-     * HIER IST PRAKTISCH ENDE
-     * 
-     * 
-     * 
-     * 
-     * 
-     * 
-     * 
-     * 
-     * 
-     */
-
-    elog(NOTICE, "GANZ WILDER VERSUCH");
-
-    UesJoinInfo*        next_exp_join;
-    RelOptInfo*         rel1;
-    RelOptInfo*         rel2;
-    //RelOptInfo*         joinrel;
-
-    /* select next expanding join */
-    next_exp_join = ues_get_next_expanding_join(root);
-    if(next_exp_join == NULL)
-    {
-        next_exp_join = linitial(ues_state->filter_joins);
-    }
-
-    rel1 = next_exp_join->rel1->baserel;
-    rel2 = next_exp_join->rel2->baserel;
-
-    joinrel = make_join_rel(root, rel1, rel2);
-
-    set_cheapest(joinrel);
-
-
-    ues_join_search_cleanup(root);
-    return joinrel;
 }
 
 void _PG_init(void)
