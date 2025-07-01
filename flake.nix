@@ -15,9 +15,13 @@
       devShells.default = pkgs.mkShell {
         packages = with pkgs; [
 	  #dev stuff
-	  git
-	  gcc
 	  cmake
+	  gcc
+	  gdb
+	  git
+	  glibc
+	  glibc.dev
+	  glibc.debug
 	  gnumake
 	  
 	  #build stuff for compiling postgres
