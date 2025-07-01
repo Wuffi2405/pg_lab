@@ -479,7 +479,10 @@ ues_get_next_expanding_join(PlannerInfo* root)
 * sets up the enumeration part
 *
 * takes the first expanding join and put its two relations into 
-* the currentrel in ues_state and returns the other one
+* the currentrel in ues_state and returns the other one.
+*
+* If no expanding joins available this funktions takes a 
+* filter relation.
 */
 RelOptInfo* ues_init_enumeration(PlannerInfo* root, UesJoinInfo** ujinfo)
 {
@@ -489,10 +492,10 @@ RelOptInfo* ues_init_enumeration(PlannerInfo* root, UesJoinInfo** ujinfo)
 
     ues_state = root->join_search_private;
 
-    elog(NOTICE, "ues_init_enumeration aufgerufen");
+    elog(NOTICE, "[called] ues_init_enumeration");
 
     if(ues_state->expanding_joins == NULL){
-        elog(NOTICE, "is NULL"); 
+        elog(NOTICE, "ues_state->expanding_joins is NULL. No expanding joins present."); 
         filter = (UesJoinInfo*) linitial(ues_state->filter_joins);
         *ujinfo = filter;
         ues_state->current_intermediate = filter->rel1->baserel;
@@ -501,7 +504,7 @@ RelOptInfo* ues_init_enumeration(PlannerInfo* root, UesJoinInfo** ujinfo)
     
     if(ues_state->expanding_joins->length == 0)
     {
-        elog(NOTICE, "ist leer");
+        elog(NOTICE, "ues_state->expanding_joins ist leer");
         filter = (UesJoinInfo*) linitial(ues_state->filter_joins);
         *ujinfo = filter;
         ues_state->current_intermediate = filter->rel1->baserel;
@@ -518,6 +521,8 @@ RelOptInfo* ues_init_enumeration(PlannerInfo* root, UesJoinInfo** ujinfo)
     ues_state->current_intermediate = join->rel1->baserel;
     elog(NOTICE, "vor return");
     *ujinfo = join;
+
+    elog(NOTICE, "[finished] ues_init_enumeration");
     return join->rel2->baserel;
 }
 /*
@@ -651,6 +656,89 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
 }
 
 /*
+* iterate over all filter joins and check if they can
+* be joined on rel. Iterates until all possible filters
+* are joinded.
+*
+* Assumes that initialized UesState is stored in root->
+* join_search_private.
+*/
+RelOptInfo*
+ues_join_filters(PlannerInfo* root, RelOptInfo* jrel)
+{
+    UesState*       ues_state;
+    RelOptInfo*     rel;
+    bool            interrupted;
+    ListCell*       lcfj;
+    UesJoinInfo*    filter;
+    RelOptInfo*     filter_rel1;
+    RelOptInfo*     filter_rel2;
+    
+    ues_state = root->join_search_private;
+    rel = jrel;
+    interrupted = false;
+
+    /*
+    * So long as filter joins still exist and we
+    * joined one relation in last iteration, we
+    * do another run-through. 
+    * 
+    * At the time when no filters left or we did
+    * a run-through without any new joins we are
+    * finished here.
+    */
+    while(ues_state->filter_joins != NULL && interrupted)
+    {
+        foreach(lcfj, ues_state->filter_joins)
+        {
+            filter = (UesJoinInfo*) lfirst(lcfj);
+            filter_rel1 = filter->rel1->baserel;
+            filter_rel2 = filter->rel2->baserel;
+            
+            /*
+            * check if the current filter has a relation
+            * joinable on rel. If not, we can skip this for now.
+            */
+            if(!have_relevant_eclass_joinclause(root, rel, filter_rel1) &&
+                !have_relevant_eclass_joinclause(root, rel, filter_rel2))
+            {
+                continue;
+            }
+
+            /* 
+            * At this point we check if we can join a filter relation.
+            * For that purpose we dirst check if filter_rel1 is already
+            * part of current intermediate. If it is, we gonna check if
+            * there is a joinclause with the other filter relation. If
+            * so, we do a join.
+            * Afterwards we check the same, for the other relation.
+            */
+            if(bms_is_subset(filter_rel1->relids, ues_state->current_intermediate->relids))
+            {   
+                if(have_relevant_eclass_joinclause(root, ues_state->current_intermediate, filter_rel2))
+                {
+                    ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, filter_rel2, filter);
+                    interrupted = true;
+                    continue;
+                }
+            }
+            if(bms_is_subset(filter_rel2->relids, ues_state->current_intermediate->relids))
+            {   
+                if(have_relevant_eclass_joinclause(root, ues_state->current_intermediate, filter_rel1))
+                {
+                    ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, filter_rel1, filter);
+                    interrupted = true;
+                    continue;
+                }
+            }
+
+        }
+    }
+
+    return rel;
+}
+
+/*
  * default method of ues. Decides if to use postgres standard stuff
  * e.g. standard_join_search or geqo or to use our ues implementation.
  * This function is integrated through the join_search_hook. The real
@@ -689,6 +777,7 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
     RelOptInfo*     filter_rel1;
     RelOptInfo*     filter_rel2;
     ListCell*       lcfj;
+    int             loop_count;
 
     /*
      * Prepare anything for UES. 
@@ -699,6 +788,8 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
     ues_print_state(root, ues_state);
     ues_print_joins(root, ues_state);
 
+    loop_count = 0;
+
     /*
      * ues algorithm starts here
      */
@@ -706,168 +797,114 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
     ues_sort_expanding_joins(root);
     elog(NOTICE, "sorting successful");
 
-    while(ues_state->expanding_joins != NULL || ues_state->expanding_joins != NIL)
+    while((ues_state->expanding_joins != NULL && 
+            ues_state->expanding_joins != NIL) && 
+            !ues_state->expanding_joins->length <= 0)
     {
         if(ues_state->expanding_joins->length <= 0)
         {
-            elog(ERROR, "ues_state->expanding_joins->length is zero or lower but not NULL or NIL. This should never happen.");
+            elog(ERROR, "ues_state->expanding_joins->length is zero or lower but not NULL or NIL. This should never happen. \
+                Length: %d", ues_state->expanding_joins->length);
         }
-
+        
         /*
         * Normally we join on ues_state->current_intermediate
         * but when we start joining relations it is NULL, NIL
-        * or whatever. 
+        * or whatever. So we need a case differentiation. The
+        * default method is ues_next_join which returns the 
+        * next expanding join. 
+        * 
+        * When we are in the first enumeration of the while
+        * loop, we call ues_init_enumeration, which also
+        * returns the next expanding join. Additionally it
+        * sets ues_state->current_intermediate to the other
+        * relation of the expanding join which is not 
+        * returned.
         */
+        elog(NOTICE, "while loop: enumeration %d", loop_count++);
 
-        elog(NOTICE, "while starts");
-        /* select next relation to join */
         if(ues_state->current_intermediate == NULL)
         {  
             next_join = ues_init_enumeration(root, &expanding);
-            elog(NOTICE, "gut rausgekommen");
+            elog(NOTICE, "initial expanding join set");
         }else
         {
             next_join = ues_next_join(root, &expanding);
+            elog(NOTICE, "next expanding join set");
         }
 
         if(next_join == NULL)
         {
-            elog(ERROR, "Couldn't skedule all expanding joins");
+            elog(ERROR, "Couldn't set next expanding join");
         }
-
-        elog(NOTICE, "next join successful chosen");
 
         /* 
         * here we are at a state where its clear, that we
         * want to join next_join to current_intermediate.
         * 
-        * the next step consits of determining which filters 
+        * the next step consists of determining which filters 
         * can be joined into them.
-        * 
-        * @TODO: needs to be iterated over more times
         */
+
+        /*
+         * Check if there are any filter joins left.
+         * If not, we can skip this. 
+         */
         if(ues_state->filter_joins == NULL)
         {
-            elog(NOTICE, "keine Filter->nächster Durchlauf");
+            elog(NOTICE, "no filters left. Join on current_intermediate now.");
             ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, next_join, expanding);
             continue;
         }
-        elog(NOTICE, "Filter vorhanden");
 
-        foreach(lcfj, ues_state->filter_joins)
-        {
-            filter = (UesJoinInfo*) lfirst(lcfj);
-            filter_rel1 = filter->rel1->baserel;
-            filter_rel2 = filter->rel2->baserel;
-
-            /*
-            * we check if the filter can be joined into the 
-            * current intermeidate
-            */
-
-            elog(NOTICE, "check: join an cur_intm");
-
-            /* check if filter_rel1 is in current intermediate */
-            if(bms_is_subset(filter_rel1->relids, ues_state->current_intermediate->relids))
-            {   
-                /* check if the other relation is ready to be joinded */
-                if(have_relevant_eclass_joinclause(root, ues_state->current_intermediate, filter_rel2))
-                {
-                    ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, filter_rel2, filter);
-                    //ues_make_rel(root, &ues_state->current_intermediate, filter_rel2);
-                    continue;
-                }
-            }
-
-            /* check if filter_rel2 is in current intermediate */
-            if(bms_is_subset(filter_rel2->relids, ues_state->current_intermediate->relids))
-            {   
-                /* check if the other relation is ready to be joinded */
-                if(have_relevant_eclass_joinclause(root, ues_state->current_intermediate, filter_rel1))
-                {
-                    ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, filter_rel1, filter);
-                    //ues_make_rel(root, &ues_state->current_intermediate, filter_rel1);
-                    continue;
-                }
-            }
-
-            /*
-            * we also want to check if we can join the filter
-            * into our next_join
-            */
-            
-            elog(NOTICE, "check: join an next_join");
-
-            /* check if filter_rel1 is in current intermediate */
-            if(bms_is_subset(filter_rel1->relids, next_join->relids))
-            {   
-                /* check if the other relation is ready to be joinded */
-                if(have_relevant_eclass_joinclause(root, next_join, filter_rel2))
-                {
-                    next_join= ues_make_join_rel(root, next_join, filter_rel2, filter);
-                    //ues_make_rel(root, &next_join, filter_rel2);
-                    continue;
-                }
-            }
-
-            /* check if filter_rel2 is in current intermediate */
-            if(bms_is_subset(filter_rel2->relids, next_join->relids))
-            {   
-                /* check if the other relation is ready to be joinded */
-                if(have_relevant_eclass_joinclause(root, next_join, filter_rel1))
-                {
-                    next_join= ues_make_join_rel(root, next_join, filter_rel1, filter);
-                    //ues_make_rel(root, &next_join, filter_rel1);
-                    continue;
-                }
-            }
-        }
-
-        elog(NOTICE, "Filter fertig gejoint");
+        /*
+        * Join filters on next_join and 
+        * current_intermediate.
+        */
+        ues_state->current_intermediate = ues_join_filters(root, ues_state->current_intermediate);
+        next_join = ues_join_filters(root, next_join);
+        elog(NOTICE, "All possible filters joined");
 
         /*
         *   all possible filters were appiled. In the next step
-        *   we have to join the next_join into the intermediate,
+        *   we have to join the next_join on the intermediate,
         *   before we chose the next expanding join to add.
         */
         ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, next_join, expanding);
 
-        // if(ues_state->expanding_joins == NULL)
-        // {
-        //     break;
-        // }
-
     }
 
     /*
-    *   At this point we joinded all expanding joins. At last
-    *   we need to check if we joined all filters due to the
-    *   fact that they are not included in the big loops
+    *   At this point we can assume that we joined all expanding 
+    *   joins. At last we need to check if we joined all filters 
+    *   due to the fact that they are not included in the big loops
     *   condition.
     * 
-    *   But if we hadn't any filters at all, the list 
-    *   filter_joins is NULL. So we need to cover this case
-    *   before.
+    *   If filter_joins is not NULL or NIL, there are joins left
+    *   in the list. If this happend, the filters couldn't joined
+    *   anywhere. This is an error, that should not occur.
     */
-    if(ues_state->filter_joins != NULL)
+    if(ues_state->filter_joins != NULL && 
+        ues_state->filter_joins != NIL)
     {
-        if(!ues_state->filter_joins->length == 0)
-        {
-            elog(ERROR, "Couldn't skedule all filter joins");
-        }
+        elog(ERROR, "Couldn't skedule all filter joins");
     }
 
-    elog(NOTICE, "return erreicht");
-
+    /*
+    * return current_intermediate from ues_state and 
+    * prepare everything for return into postgres code.
+    */
     joinrel = ues_state->current_intermediate;
-
-    elog(NOTICE, "jetzt: cleanup");
-    ues_join_search_cleanup(root);
-
-    elog(NOTICE, "jetzt: set cheapest");
     set_cheapest(joinrel);
 
-    elog(NOTICE, "jetzt returnen");
+    /*
+    * Clean up ues data in memory to avoid
+    * memory overflow.
+    */
+    ues_join_search_cleanup(root);
+
+
+    elog(NOTICE, "ues finished. return into postgres code");
     return joinrel;
     
     /**
