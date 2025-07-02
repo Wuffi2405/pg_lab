@@ -81,3 +81,4 @@ pg_lab/hints/*
 pg_lab/ues/SQLTestData/imdb_data/*
 pg_lab/ues/Queries/*
 pg_lab/ues/test/*
+pg_lab/ues/test.sql
