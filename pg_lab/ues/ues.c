@@ -229,6 +229,11 @@ ues_print_joins(PlannerInfo *root, UesState *ues_state)
     Oid             rel2;
 
     appendStringInfo(msg, "\n===\nJOINS CURRENTLY KLASSIFIED AS EXPANDING");
+    if(ues_state->expanding_joins != NULL && ues_state->expanding_joins != NIL)
+    {
+        appendStringInfo(msg, " (%d)", ues_state->expanding_joins->length);
+    }
+
     foreach(ejlc, ues_state->expanding_joins){
         uji = lfirst(ejlc);
         rel1 = root->simple_rte_array[uji->rel1->baserel->relid]->relid;
@@ -236,6 +241,11 @@ ues_print_joins(PlannerInfo *root, UesState *ues_state)
         appendStringInfo(msg, "\n\tRel1: %s\n\tRel2: %s\n\tUB: %f\n---", get_rel_name(rel1), get_rel_name(rel2), uji->upper_bound);
     }
     appendStringInfo(msg, "\nJOINS CURRENTLY KLASSIFIED AS FILTER");
+    if(ues_state->filter_joins != NULL && ues_state->filter_joins != NIL)
+    {
+        appendStringInfo(msg, " (%d)", ues_state->filter_joins->length);
+    }
+
     foreach(ejlc, ues_state->filter_joins){
         uji = lfirst(ejlc);
         rel1 = root->simple_rte_array[uji->rel1->baserel->relid]->relid;
@@ -388,9 +398,7 @@ void ues_sort_expanding_joins(PlannerInfo* root)
     if (t->rel1 == NULL) {
         elog(ERROR, "------------------------fdfd 1");
     }
-    elog(NOTICE, "------------------------fdcxfcfcfcfcfcccdsa");
-    //elog(NOTICE, "output length: %d", output->length);
-    elog(NOTICE, "expnd length: %d", ues_state->expanding_joins->length);
+
     while(ues_state->expanding_joins->length != 0)
     {   
         curr_min = INTMAX_MAX;
@@ -419,8 +427,8 @@ void ues_sort_expanding_joins(PlannerInfo* root)
             elog(NOTICE, "exist check: %s", curr_info==NULL);
         }
         
-        elog(NOTICE, "output length: %d", output->length);
-        elog(NOTICE, "expnd length: %d", ues_state->expanding_joins->length);
+        //elog(NOTICE, "output length: %d", output->length);
+        //elog(NOTICE, "expnd length: %d", ues_state->expanding_joins->length);
         
     }
 
@@ -540,9 +548,10 @@ RelOptInfo* ues_next_join(PlannerInfo* root, UesJoinInfo** ujinfo)
     RelOptInfo*     elem2;
     RelOptInfo*     elem_curr;
 
-    elog(NOTICE, "ues_next_join aufgerufen");
+    elog(NOTICE, "[called] ues_next_join");
 
     ues_state = root->join_search_private;
+    elem_curr = ues_state->current_intermediate;
 
     if(ues_state->expanding_joins == NULL)
     {
@@ -824,6 +833,7 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
     RelOptInfo*     filter_rel2;
     ListCell*       lcfj;
     int             loop_count;
+    StringInfo      msg;
 
     /*
      * Prepare anything for UES. 
@@ -840,6 +850,13 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
      * ues algorithm starts here
      */
     ues_sort_expanding_joins(root);
+
+    msg = makeStringInfo();
+    appendStringInfo(msg, "\n=========================\n");
+    appendStringInfo(msg, "   preperation finished   \n");
+    appendStringInfo(msg, "==========================\n");
+    elog(NOTICE, "%s", msg->data);
+    destroyStringInfo(msg);
 
     while((ues_state->expanding_joins != NULL && 
             ues_state->expanding_joins != NIL) && 
@@ -892,6 +909,10 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
         {
             elog(NOTICE, "no filters left. Join on current_intermediate now.");
             ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, next_join, expanding);
+
+            elog(NOTICE, "<<< End main while loop. It follows the current state:");
+            ues_print_state(root, ues_state);
+            ues_print_joins(root, ues_state);
             continue;
         }
 
