@@ -411,6 +411,7 @@ void ues_sort_expanding_joins(PlannerInfo* root)
         {
             elog(NOTICE, "exist check: %s", curr_info==NULL);
         }
+        // @todo: this is not how to use list_delete_cell. But with normal use it doesnt work lol
         list_delete_cell(ues_state->expanding_joins, curr_cell); // Hier lieber auf Kopie arbeiten?
 
         if(curr_info==NULL)
@@ -604,6 +605,17 @@ RelOptInfo* ues_next_join(PlannerInfo* root, UesJoinInfo** ujinfo)
     return NULL;
 }
 
+/*
+* Makes an relation for ues. Assumes that an UesState
+* is stored in root->join_search_private. At the end
+* this function calls the default make_join_rel from
+* postgres. But before so, we have to work off the 
+* following ToDo:
+*
+* a) delete the UesJoinInfo object from expanding_joins
+*    or filter_joins list.
+* b) update Keys after joining
+*/
 RelOptInfo*
 ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoinInfo* jinfo)
 {
@@ -617,40 +629,61 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
     ues_state = root->join_search_private;
     info = jinfo;
 
-    /* delete join from associated list */
+    /*
+    * a) Delete UesJoinInfo Object from associated list.
+    *    To do so, we distinguish according to join_type.
+    *    When decided, we iterate over the associated list
+    *    until we found our element. That helps us to
+    *    determine the ListCell of the element in the list.
+    *    At last we delete the element from the list.
+    */
     if(info->join_type == UES_JOIN_EXPANDING)
     {
         foreach(lc, ues_state->expanding_joins)
         {
             dummy = (UesJoinInfo*) lfirst(lc);
-            if(dummy->rel1 == jinfo->rel1 && dummy->rel2 == jinfo->rel2)
+            if(dummy == jinfo)
             {
                 cell = lc;
                 break;
             }
         }
-        list_delete_cell(ues_state->expanding_joins, cell);
+        //elog(NOTICE, "Expanding joins vor löschen: %d", ues_state->expanding_joins->length);
+        ues_state->expanding_joins = list_delete_cell(ues_state->expanding_joins, cell);
+        //elog(NOTICE, "Expanding joins nach löschen: %d", ues_state->expanding_joins->length);
+
+    /* part two for the filter case*/
     }else if(info->join_type == UES_JOIN_FILTER)
     {
         foreach(lc, ues_state->filter_joins)
         {
             dummy = (UesJoinInfo*) lfirst(lc);
-            if(dummy->rel1 == jinfo->rel1 && dummy->rel2 == jinfo->rel2)
+            if(dummy == jinfo)
             {
                 cell = lc;
                 break;
             }
         }
-        list_delete_cell(ues_state->filter_joins, cell);
+        ues_state->filter_joins = list_delete_cell(ues_state->filter_joins, cell);
+
+    /* the error case */
     }else
     {
         elog(ERROR, "Couldn't recognize join type");
     }
     
-    /* perform actual join */
-    join = make_join_rel(root, rel1, rel2);
+    /*
+    * b) update the keys here
+    */
+    
 
-    set_cheapest(ues_state->current_intermediate);
+    /* perform actual join */
+    // elog(NOTICE, "Expanding joins vor join: %d", ues_state->expanding_joins->length);
+    // elog(NOTICE, "expanding_joins address before: %p", (void *) ues_state->expanding_joins);
+    join = make_join_rel(root, rel1, rel2);
+    // elog(NOTICE, "Expanding joins nach join: %d", ues_state->expanding_joins->length);
+    // elog(NOTICE, "expanding_joins address after: %p", (void *) ues_state->expanding_joins);
+    set_cheapest(join);
 
     return join;
 }
@@ -676,7 +709,13 @@ ues_join_filters(PlannerInfo* root, RelOptInfo* jrel)
     
     ues_state = root->join_search_private;
     rel = jrel;
-    interrupted = false;
+    interrupted = true;
+
+    elog(NOTICE, "ues_join_filters");
+    elog(NOTICE, "%d", ues_state->current_intermediate);
+
+    elog(NOTICE, ">>> Anfang von ues_join_filters");
+    ues_print_joins(root, ues_state);
 
     /*
     * So long as filter joins still exist and we
@@ -687,8 +726,14 @@ ues_join_filters(PlannerInfo* root, RelOptInfo* jrel)
     * a run-through without any new joins we are
     * finished here.
     */
-    while(ues_state->filter_joins != NULL && interrupted)
+    
+    int i = 0;
+    while(ues_state->filter_joins != NULL &&
+            ues_state->filter_joins != NIL && 
+            interrupted)
     {
+        elog(NOTICE, "while counter: %d", i++);
+        interrupted = false;
         foreach(lcfj, ues_state->filter_joins)
         {
             filter = (UesJoinInfo*) lfirst(lcfj);
@@ -702,6 +747,7 @@ ues_join_filters(PlannerInfo* root, RelOptInfo* jrel)
             if(!have_relevant_eclass_joinclause(root, rel, filter_rel1) &&
                 !have_relevant_eclass_joinclause(root, rel, filter_rel2))
             {
+                elog(NOTICE, "ES GIBT KEINE ECLASS");
                 continue;
             }
 
@@ -713,26 +759,32 @@ ues_join_filters(PlannerInfo* root, RelOptInfo* jrel)
             * so, we do a join.
             * Afterwards we check the same, for the other relation.
             */
-            if(bms_is_subset(filter_rel1->relids, ues_state->current_intermediate->relids))
+            if(bms_is_subset(filter_rel1->relids, rel->relids))
             {   
-                if(have_relevant_eclass_joinclause(root, ues_state->current_intermediate, filter_rel2))
+                elog(NOTICE, "is subset a");
+                if(have_relevant_eclass_joinclause(root, rel, filter_rel2))
                 {
-                    ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, filter_rel2, filter);
+                    elog(NOTICE, "have eclass a");
+                    rel= ues_make_join_rel(root, rel, filter_rel2, filter);
                     interrupted = true;
-                    continue;
+                    break;
                 }
             }
-            if(bms_is_subset(filter_rel2->relids, ues_state->current_intermediate->relids))
+            if(bms_is_subset(filter_rel2->relids, rel->relids))
             {   
-                if(have_relevant_eclass_joinclause(root, ues_state->current_intermediate, filter_rel1))
+                elog(NOTICE, "is subset b");
+                if(have_relevant_eclass_joinclause(root, rel, filter_rel1))
                 {
-                    ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, filter_rel1, filter);
+                    elog(NOTICE, "have eclass b");
+                    rel = ues_make_join_rel(root, rel, filter_rel1, filter);
                     interrupted = true;
-                    continue;
+                    break;
                 }
             }
 
         }
+        elog(NOTICE, ">>> Nach der foreach schleife");
+        ues_print_joins(root, ues_state);
     }
 
     return rel;
@@ -804,8 +856,9 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
         if(ues_state->expanding_joins->length <= 0)
         {
             elog(ERROR, "ues_state->expanding_joins->length is zero or lower but not NULL or NIL. This should never happen. \
-                Length: %d", ues_state->expanding_joins->length);
+                Length: %d", ues_state->expanding_joins->length);   
         }
+        
         
         /*
         * Normally we join on ues_state->current_intermediate
@@ -821,8 +874,10 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
         * relation of the expanding join which is not 
         * returned.
         */
-        elog(NOTICE, "while loop: enumeration %d", loop_count++);
-
+        elog(NOTICE, ">>>>>>>>>>>> while loop: enumeration %d", loop_count++);
+       
+        elog(NOTICE, "Expanding joins: %d", ues_state->expanding_joins->length);
+        
         if(ues_state->current_intermediate == NULL)
         {  
             next_join = ues_init_enumeration(root, &expanding);
@@ -837,6 +892,8 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
         {
             elog(ERROR, "Couldn't set next expanding join");
         }
+
+        ues_print_state(root, ues_state);
 
         /* 
         * here we are at a state where its clear, that we
@@ -861,9 +918,13 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
         * Join filters on next_join and 
         * current_intermediate.
         */
+        elog(NOTICE, "Expanding joins: %d", ues_state->expanding_joins->length);
+        
         ues_state->current_intermediate = ues_join_filters(root, ues_state->current_intermediate);
         next_join = ues_join_filters(root, next_join);
         elog(NOTICE, "All possible filters joined");
+        
+        elog(NOTICE, "Expanding joins: %d", ues_state->expanding_joins->length);
 
         /*
         *   all possible filters were appiled. In the next step
@@ -872,6 +933,9 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
         */
         ues_state->current_intermediate = ues_make_join_rel(root, ues_state->current_intermediate, next_join, expanding);
 
+        //elog(NOTICE, "Expanding joins: %d", ues_state->expanding_joins->length);
+        elog(NOTICE, "<<< End main while loop");
+        ues_print_state(root, ues_state);
     }
 
     /*
@@ -887,7 +951,10 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
     if(ues_state->filter_joins != NULL && 
         ues_state->filter_joins != NIL)
     {
-        elog(ERROR, "Couldn't skedule all filter joins");
+        if(ues_state->filter_joins->length > 0)
+        {
+            elog(ERROR, "Couldn't skedule all filter joins. Filters remaining: %d", ues_state->filter_joins->length);
+        }
     }
 
     /*
