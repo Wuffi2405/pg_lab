@@ -82,3 +82,6 @@ pg_lab/ues/SQLTestData/imdb_data/*
 pg_lab/ues/Queries/*
 pg_lab/ues/test/*
 pg_lab/ues/test.sql
+pg_lab/ues/evaluation/queries
+pg_lab/ues/evaluation/queries-prep
+pg_lab/ues/evaluation/queries-outp
