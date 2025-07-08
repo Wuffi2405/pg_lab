@@ -343,6 +343,80 @@ ues_init_joinrels(PlannerInfo *root)
     }
 }
 
+void
+ues_update_joinrels(PlannerInfo* root)
+{
+    UesState*       ues_state;
+    ListCell*       lco;
+    ListCell*       lci;
+    UesJoinKey*     jk_outer;
+    UesJoinKey*     jk_inner;
+    UesJoinInfo*    uinfo;
+    UesJoinType     type;
+
+    ues_state = root->join_search_private;
+
+    elog(NOTICE, "[called] ues_update_joinrels");
+
+    list_free_deep(ues_state->expanding_joins);
+    list_free_deep(ues_state->filter_joins);
+    ues_state->expanding_joins = NIL;
+    ues_state->filter_joins = NIL;
+
+
+    ues_init_joinrels(root);
+
+    foreach(lco, ues_state->candidate_keys)
+    {
+        jk_outer = lfirst(lco);
+
+        foreach(lci, ues_state->joined_keys)
+        {
+            jk_inner = lfirst(lci);
+
+            if(!have_relevant_eclass_joinclause(root, jk_outer->baserel, jk_inner->baserel))
+            {
+                continue;
+            }
+
+            if(jk_outer->key_type == KT_PRIMARY)
+            {
+                if(jk_inner->key_type == KT_PRIMARY || jk_inner->key_type == KT_FOREIGN)
+                {
+                    type = UES_JOIN_FILTER;
+                }
+            }else if(jk_inner->key_type == KT_PRIMARY)
+            {
+                if(jk_outer->key_type == KT_PRIMARY || jk_outer->key_type == KT_FOREIGN)
+                {
+                    type = UES_JOIN_FILTER;
+                }
+            }else{
+                type = UES_JOIN_EXPANDING;
+            }
+
+            uinfo = (UesJoinInfo*) palloc(sizeof(UesJoinInfo));
+            uinfo->join_type = type;
+            uinfo->rel1 = jk_outer;
+            uinfo->rel2 = jk_inner;
+            
+            elog(NOTICE, "BEFORE UPPER BOUND");
+            uinfo->upper_bound = get_upper_bound(root, jk_outer, jk_inner);
+            elog(NOTICE, "AFTER UPPER BOUND");
+
+            if(type == UES_JOIN_EXPANDING)
+            {
+                ues_state->expanding_joins = lappend(ues_state->expanding_joins, uinfo);
+            }else
+            {
+                ues_state->filter_joins = lappend(ues_state->filter_joins, uinfo);
+            }
+        }
+    }
+
+    elog(NOTICE, "[finished] ues_update_joinrels");
+}
+
 UpperBound get_upper_bound(PlannerInfo* info, UesJoinKey* left_key, UesJoinKey* right_key)
 {
     // TODO: muss für Filter nicht berechnet werden.
@@ -503,36 +577,34 @@ RelOptInfo* ues_init_enumeration(PlannerInfo* root, UesJoinInfo** ujinfo)
 
     elog(NOTICE, "[called] ues_init_enumeration");
 
-    if(ues_state->expanding_joins == NULL){
-        elog(NOTICE, "ues_state->expanding_joins is NULL. No expanding joins present."); 
+    /*
+    * Case 1: there are no expanding joins
+    *
+    * In this case we choose a filter join
+    */
+    if(ues_state->expanding_joins == NULL ||
+        ues_state->expanding_joins->length == 0){
+        elog(NOTICE, "ues_state->expanding_joins is NULL or empty. \
+                        No expanding joins present. Consider filter as fallback."); 
         filter = (UesJoinInfo*) linitial(ues_state->filter_joins);
         *ujinfo = filter;
-        ues_state->current_intermediate = filter->rel1->baserel;
-        return filter->rel2->baserel;
-    }
-    
-    if(ues_state->expanding_joins->length == 0)
-    {
-        elog(NOTICE, "ues_state->expanding_joins ist leer");
-        filter = (UesJoinInfo*) linitial(ues_state->filter_joins);
-        *ujinfo = filter;
-        ues_state->current_intermediate = filter->rel1->baserel;
-        return filter->rel2->baserel;
+        //ues_state->current_intermediate = filter->rel1->baserel;
+        return filter->rel1->baserel;
     }
 
-    elog(NOTICE, "ist nicht leer");
+    elog(NOTICE, "expanding joins are available");
     join = (UesJoinInfo*) linitial(ues_state->expanding_joins);
-    if (join->rel1 == NULL) {
-        elog(ERROR, "No expanding join found (join is NULL)");
-        return NULL;
-    }
-    elog(NOTICE, "got join");
-    ues_state->current_intermediate = join->rel1->baserel;
-    elog(NOTICE, "vor return");
+    // if (join->rel1 == NULL) {
+    //     elog(ERROR, "No expanding join found (join is NULL)");
+    //     return NULL;
+    // }
+    // elog(NOTICE, "got join");
+    //ues_state->current_intermediate = join->rel1->baserel;
+    // elog(NOTICE, "vor return");
     *ujinfo = join;
 
     elog(NOTICE, "[finished] ues_init_enumeration");
-    return join->rel2->baserel;
+    return join->rel1->baserel;
 }
 /*
 * returns the next join to do
@@ -614,6 +686,47 @@ RelOptInfo* ues_next_join(PlannerInfo* root, UesJoinInfo** ujinfo)
     return NULL;
 }
 
+void
+ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey)
+{
+    UesState*   ues_state;
+    UesJoinKey* key;
+    UesJoinKey* dummy;
+    ListCell*   lc;
+    ListCell*   cell;
+    Oid         rel;
+    char*       name_rel;
+    char*       name_att;
+
+    ues_state = root->join_search_private;
+    key = jkey;
+
+    elog(NOTICE, "[called] ues_switch_key_in_list");
+
+    if(list_member(ues_state->candidate_keys, key))
+    {   
+        foreach(lc, ues_state->candidate_keys)
+        {   
+            dummy = (UesJoinKey*) lfirst(lc);
+            if(dummy == key)
+            {
+                cell = lc;
+                break;
+            }
+        }
+        ues_state->candidate_keys = list_delete_cell(ues_state->candidate_keys, cell);
+        ues_state->joined_keys = lappend(ues_state->joined_keys, key);
+
+        
+        rel = root->simple_rte_array[key->baserel->relid]->relid;
+        name_rel = get_rel_name(rel);
+        name_att = get_attname(rel, key->join_key->varattno, false);
+        elog(NOTICE, "\tswitched %s from rel %s", name_att, name_rel);
+    }
+
+    elog(NOTICE, "[finished] ues_switch_key_in_list");
+}
+
 /*
 * Makes an relation for ues. Assumes that an UesState
 * is stored in root->join_search_private. At the end
@@ -638,6 +751,8 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
     ues_state = root->join_search_private;
     info = jinfo;
 
+    elog(NOTICE, "[called] ues_make_join_rel");
+
     /*
     * a) Delete UesJoinInfo Object from associated list.
     *    To do so, we distinguish according to join_type.
@@ -657,9 +772,7 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
                 break;
             }
         }
-        //elog(NOTICE, "Expanding joins vor löschen: %d", ues_state->expanding_joins->length);
         ues_state->expanding_joins = list_delete_cell(ues_state->expanding_joins, cell);
-        //elog(NOTICE, "Expanding joins nach löschen: %d", ues_state->expanding_joins->length);
 
     /* part two for the filter case*/
     }else if(info->join_type == UES_JOIN_FILTER)
@@ -682,17 +795,29 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
     }
     
     /*
-    * b) update the keys here
+    * update upperbounds
     */
     
-
+   
+    /*
+     * b) update the keys here
+     * 
+     * candidate key -> joined key
+     * update upperbound
+     */
+    ues_switch_key_in_list(root, jinfo->rel1);
+    ues_switch_key_in_list(root, jinfo->rel2);
+    
+    //now rebuild expnd/join lists
+    ues_update_joinrels(root);
+    
     /* perform actual join */
-    // elog(NOTICE, "Expanding joins vor join: %d", ues_state->expanding_joins->length);
-    // elog(NOTICE, "expanding_joins address before: %p", (void *) ues_state->expanding_joins);
     join = make_join_rel(root, rel1, rel2);
-    // elog(NOTICE, "Expanding joins nach join: %d", ues_state->expanding_joins->length);
-    // elog(NOTICE, "expanding_joins address after: %p", (void *) ues_state->expanding_joins);
     set_cheapest(join);
+
+    elog(NOTICE, "[finished] ues_make_join_rel. Current UesState and detected joins following: (intermediate wrong)");
+    ues_print_state(root, ues_state);
+    ues_print_joins(root, ues_state);
 
     return join;
 }
@@ -715,12 +840,16 @@ ues_join_filters(PlannerInfo* root, RelOptInfo* jrel)
     UesJoinInfo*    filter;
     RelOptInfo*     filter_rel1;
     RelOptInfo*     filter_rel2;
-    
+    Oid             rel_oid;
+    char*           relname;
+
     ues_state = root->join_search_private;
     rel = jrel;
     interrupted = true;
 
-    elog(NOTICE, "[called] ues_join_filters. Deteced joins followed:");
+    rel_oid = root->simple_rte_array[jrel->relid]->relid;
+    relname = get_rel_name(rel_oid);
+    elog(NOTICE, "[called] ues_join_filters for rel %s. Deteced joins followed:", relname);
     ues_print_joins(root, ues_state);
 
     /*
@@ -876,30 +1005,71 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
         * relation of the expanding join which is not 
         * returned.
         */
-        elog(NOTICE, ">>> main while loop: enumeration %d", loop_count++);
-        
+        msg = makeStringInfo();
+        appendStringInfo(msg, "\n--------------------------\n");
+        appendStringInfo(msg, " main loop, iteration:%d   \n", loop_count++);
+        appendStringInfo(msg, "--------------------------\n");
+        elog(NOTICE, "%s", msg->data);
+        destroyStringInfo(msg);
+
+
         if(ues_state->current_intermediate == NULL)
         {  
-            next_join = ues_init_enumeration(root, &expanding);
+            ues_state->current_intermediate = ues_init_enumeration(root, &expanding);
             elog(NOTICE, "initial expanding join set");
-        }else
-        {
-            next_join = ues_next_join(root, &expanding);
-            elog(NOTICE, "next expanding join set");
-        }
 
+            /*
+             * To prevent inconsistent states we have to
+             * join filters right here. In worst case it
+             * could happen that we lose our expanding
+             * join when joining all filters. This would
+             * lead to inconsistent states and provoke
+             * segmentation faults.
+             * 
+             * Afterwards we "restart" the main while
+             * loop with an continue. If we lost our
+             * expanding join we can skip the most
+             * part of ues and can directly check for
+             * remaining filters.
+             */
+            ues_state->current_intermediate = ues_join_filters(root, ues_state->current_intermediate);
+
+            elog(NOTICE, "<<< End main while loop. It follows the current state:");
+            ues_print_state(root, ues_state);
+
+            continue;
+        }
+        
+        /*
+         * loading next expanding join. We 
+         * can assume that there is a mini-
+         * mim of one expanding join due to
+         * the ues_state->expanding_joins
+         * is not NULL, NIL or emtpy
+         */
+        next_join = ues_next_join(root, &expanding);
+        elog(NOTICE, "next expanding join set");
+        
+        /*
+         * defensive programming: Catch errors that
+         * (actually) can't happen, just in case 
+         * they appear.
+         * 
+         * We could have an expanding join that
+         * isn't joinable due to no common eclasses.
+         */
         if(next_join == NULL)
         {
             elog(ERROR, "Couldn't set next expanding join");
         }
 
         /* 
-        * here we are at a state where its clear, that we
-        * want to join next_join to current_intermediate.
-        * 
-        * the next step consists of determining which filters 
-        * can be joined into them.
-        */
+         * here we are at a state where its clear, that we
+         * want to join next_join to current_intermediate.
+         * 
+         * the next step consists of determining which filters 
+         * can be joined into them.
+         */
 
         /*
          * Check if there are any filter joins left.
@@ -916,11 +1086,20 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
             continue;
         }
 
+        msg = makeStringInfo();
+        appendStringInfo(msg, "\n==========================\n");
+        appendStringInfo(msg, "    main loop finished    \n");
+        appendStringInfo(msg, "==========================\n");
+        elog(NOTICE, "%s", msg->data);
+        destroyStringInfo(msg);
+
+        ues_print_state(root, ues_state);
+
         /*
-        * Join filters on next_join and 
-        * current_intermediate.
-        */        
-        ues_state->current_intermediate = ues_join_filters(root, ues_state->current_intermediate);
+         * Join filters on next_join and 
+         * current_intermediate.
+         */        
+        ues_state->current_intermediate = ues_join_filters(root, ues_state->current_intermediate); //delete?
         next_join = ues_join_filters(root, next_join);
         elog(NOTICE, "All possible filters joined");
         
