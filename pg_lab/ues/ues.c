@@ -728,16 +728,16 @@ ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey)
 }
 
 /*
-* Makes an relation for ues. Assumes that an UesState
-* is stored in root->join_search_private. At the end
-* this function calls the default make_join_rel from
-* postgres. But before so, we have to work off the 
-* following ToDo:
-*
-* a) delete the UesJoinInfo object from expanding_joins
-*    or filter_joins list.
-* b) update Keys after joining
-*/
+ * Makes an relation for ues. Assumes that an UesState
+ * is stored in root->join_search_private. At the end
+ * this function calls the default make_join_rel from
+ * postgres. But before so, we have to work off the 
+ * following ToDo:
+ *
+ * a) push used candidate_keys into joined_keys
+ * b) rebuild expanding_joins and filter_joins list
+ * c) update Keys properties after joining
+ */
 RelOptInfo*
 ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoinInfo* jinfo)
 {
@@ -808,6 +808,16 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
     ues_switch_key_in_list(root, jinfo->rel1);
     ues_switch_key_in_list(root, jinfo->rel2);
     
+    if(jinfo->rel1->key_type == KT_PRIMARY)
+    {
+        jinfo->rel1->key_type = KT_FOREIGN;
+    }
+    
+    if(jinfo->rel2->key_type == KT_PRIMARY)
+    {
+        jinfo->rel2->key_type = KT_FOREIGN;
+    }
+
     //now rebuild expnd/join lists
     ues_update_joinrels(root);
     
