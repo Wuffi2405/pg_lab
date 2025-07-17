@@ -735,8 +735,9 @@ ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey)
  * following ToDo:
  *
  * a) push used candidate_keys into joined_keys
- * b) rebuild expanding_joins and filter_joins list
- * c) update Keys properties after joining
+ * b) update key types (Primary->Foregin)
+ * c) update frequencies
+ * d) rebuild expanding_joins and filter_joins list
  */
 RelOptInfo*
 ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoinInfo* jinfo)
@@ -754,77 +755,93 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
     elog(NOTICE, "[called] ues_make_join_rel");
 
     /*
-    * a) Delete UesJoinInfo Object from associated list.
-    *    To do so, we distinguish according to join_type.
-    *    When decided, we iterate over the associated list
-    *    until we found our element. That helps us to
-    *    determine the ListCell of the element in the list.
-    *    At last we delete the element from the list.
-    */
-    if(info->join_type == UES_JOIN_EXPANDING)
-    {
-        foreach(lc, ues_state->expanding_joins)
-        {
-            dummy = (UesJoinInfo*) lfirst(lc);
-            if(dummy == jinfo)
-            {
-                cell = lc;
-                break;
-            }
-        }
-        ues_state->expanding_joins = list_delete_cell(ues_state->expanding_joins, cell);
-
-    /* part two for the filter case*/
-    }else if(info->join_type == UES_JOIN_FILTER)
-    {
-        foreach(lc, ues_state->filter_joins)
-        {
-            dummy = (UesJoinInfo*) lfirst(lc);
-            if(dummy == jinfo)
-            {
-                cell = lc;
-                break;
-            }
-        }
-        ues_state->filter_joins = list_delete_cell(ues_state->filter_joins, cell);
-
-    /* the error case */
-    }else
-    {
-        elog(ERROR, "Couldn't recognize join type");
-    }
-    
-    /*
-    * update upperbounds
-    */
-    
-   
-    /*
-     * b) update the keys here
-     * 
-     * candidate key -> joined key
-     * update upperbound
+     * a) At first we have to move the used keys
+     * from the candidate_keys list into the
+     * joined_keys list.
      */
     ues_switch_key_in_list(root, jinfo->rel1);
     ues_switch_key_in_list(root, jinfo->rel2);
-    
-    if(jinfo->rel1->key_type == KT_PRIMARY)
+
+    /*
+     * b) update the key types. When joining a
+     * primary key on a foregin key the joined
+     * tuple set has no longer a primary key. 
+     * Values from the former primary key can
+     * appear multiple times. This affects our
+     * filter rules when joining two relations
+     * using UES. Since the key is not primary
+     * keying anymore, joins with this key are
+     * no longer filter joins.
+     */
+    if(jinfo->rel1->key_type == KT_PRIMARY &&
+        jinfo->rel2->key_type != KT_PRIMARY)
     {
         jinfo->rel1->key_type = KT_FOREIGN;
     }
     
-    if(jinfo->rel2->key_type == KT_PRIMARY)
+    if(jinfo->rel2->key_type == KT_PRIMARY &&
+        jinfo->rel1->key_type != KT_PRIMARY)
     {
         jinfo->rel2->key_type = KT_FOREIGN;
     }
 
-    //now rebuild expnd/join lists
+    /*
+     * c) update frequencies. Since both max_freq
+     * values are standing for the value which is
+     * the most common, therefore the new maximum 
+     * frequency is the product of both max_freq
+     * values.
+     * 
+     * When performing a filter join we dont need
+     * to calculate anything as the max_freq value
+     * of the primary join will be one. We can just
+     * take the Max() of both max_freq values. 
+     */
+    if(jinfo->rel1->key_type == KT_PRIMARY ||
+        jinfo->rel2->key_type == KT_PRIMARY)
+    {
+        jinfo->rel1->max_freq = Max(jinfo->rel1->max_freq, jinfo->rel2->max_freq);
+        jinfo->rel2->max_freq = jinfo->rel1->max_freq;
+    }else
+    {
+        jinfo->rel1->max_freq = jinfo->rel1->max_freq * jinfo->rel2->max_freq;
+        jinfo->rel2->max_freq = jinfo->rel1->max_freq;
+    }
+
+    /*
+     * d) update the key lists in ues_state.
+     * It seems to be the most efficient to 
+     * just rebuild the expanding_joins and 
+     * filter_joins lists. Otherwise we would
+     * need to iterate over all list entries
+     * and check if they are effected by a
+     * key type change. 
+     */
     ues_update_joinrels(root);
     
-    /* perform actual join */
+    /*
+     * After performing all steps above
+     * we can finally perform the join
+     * operation using the postgres 
+     * joing method.
+     * 
+     * Afterwards we need to delete
+     * slow and inefficent paths. To do
+     * so we call just set_cheapest.
+     */
     join = make_join_rel(root, rel1, rel2);
     set_cheapest(join);
 
+    elog(NOTICE, "join: %d", join->tuples);
+    elog(NOTICE, "rel1: %d", rel1->tuples);
+    elog(NOTICE, "rel2: %d", rel2->tuples);
+
+    /*
+     * Print the current intermediate,
+     * candidate_keys and all detected
+     * joins to track the algorithms'
+     * work.
+     */
     elog(NOTICE, "[finished] ues_make_join_rel. Current UesState and detected joins following: (intermediate wrong)");
     ues_print_state(root, ues_state);
     ues_print_joins(root, ues_state);
