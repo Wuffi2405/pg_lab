@@ -1,10 +1,24 @@
 # determine current database mode
+#config="LOAD 'ues.so'; set ues.enable_ues=on; \n show ues.enable_ues;\n"
+config=""
 
-config="set ues.enable_ues=on; \n show ues.enable_ues;\n"
+iterations=$1 # number of iterations per experiment
+eval_dir=$2 # has to be the evaluation folder
+#ues = $3 # ues yes or no
 
-# number of iterations per experiment
-iterations=$1
-eval_dir=$2 #has to be the evaluation folder
+case $3 in
+	ues)
+    	config+="LOAD 'ues.so'; set ues.enable_ues=on; \n show ues.enable_ues;\n"
+		;;
+
+  	noues)
+		config+=""
+		;;
+
+	*)
+		echo -n "missing attribute"
+		exit
+esac
 
 # checks if folder with prepared queries already exists
 # creates folder if not present
@@ -17,7 +31,7 @@ if [ ! -d $eval_dir/queries-outp/ ]; then
 	mkdir $eval_dir/queries-outp
 fi
 
-# execute queries is random order
+# execute queries in random order
 # run every experiment multiple times
 for ((curr_iter=0; curr_iter < $iterations; curr_iter++)); do
 	# following code is done one time per iteration
@@ -30,8 +44,23 @@ for ((curr_iter=0; curr_iter < $iterations; curr_iter++)); do
 	# prepare sql scripts for execution by defining an output file and defining print stats
 	cd $eval_dir/queries
 	for file in *.sql; do 
-		printf "$config\n\o $eval_dir/queries-outp/$curr_iter/$file.json \nEXPLAIN(Analyze, Format JSON) \n" | cat - $file > tmp &&
-		mv tmp ../queries-prep/$file &&
+		
+		case $4 in
+		analyze)
+			config+="\n\o $eval_dir/queries-outp/$curr_iter/$file.json \nEXPLAIN(Analyze, Format JSON) "
+			;;
+
+		default)
+			config+="\n\o $eval_dir/queries-outp/$curr_iter/$file.json \n"
+			;;
+			
+		*)
+			echo -n "missing attribute"
+			exit
+		esac
+		
+		printf "$config\n" | cat - $file > tmp &&
+		mv tmp $eval_dir/queries-prep/$file &&
 		echo "$file prepared"
 	done
 

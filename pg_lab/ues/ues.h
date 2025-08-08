@@ -78,9 +78,23 @@ typedef struct UesJoinInfo
     UpperBound upper_bound;
 }UesJoinInfo;
 
-static UpperBound get_upper_bound(PlannerInfo* info, UesJoinKey* key1, UesJoinKey* key2);
+static UpperBound get_upper_bound_old(PlannerInfo* info, UesJoinKey* key1, UesJoinKey* key2);
+
+static UpperBound get_upper_bound_new(PlannerInfo* root, UesJoinKey* left_key, UesJoinKey* right_key);
 
 //RelOptInfo* ues_next_join(PlannerInfo* root);
 
 RelOptInfo* 
 ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels);
+
+static int
+compare_UesJoinInfo(const ListCell *a, const ListCell *b);
+
+void
+ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey, List** affected_keys);
+
+void
+ues_get_possible_joins(PlannerInfo* root);
+
+UesJoinType
+ues_get_jointype(UesJoinKey* key1, UesJoinKey* key2);
