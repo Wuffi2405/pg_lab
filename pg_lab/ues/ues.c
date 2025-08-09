@@ -15,6 +15,8 @@
 
 #include "ues.h"
 
+#define DEBUG
+
 PG_MODULE_MAGIC;
 
 extern join_search_hook_type join_search_hook;
@@ -167,7 +169,7 @@ ues_init_baserels(PlannerInfo *root, List **rels)
             if (sslot.nvalues > 0)
             {
                 /* We found an MCV list, use it */
-                max_freq = sslot.numbers[0] * baserel->tuples; /* index 0 is the highest frequency */
+                max_freq = (double) sslot.numbers[0] * baserel->tuples; /* index 0 is the highest frequency */
             }
             else
             {
@@ -256,127 +258,6 @@ ues_print_joins(PlannerInfo *root, UesState *ues_state)
     destroyStringInfo(msg);
 }
 
-/**
- * Generates all joins that are
- * possible with our candidate_keys.
- * 
- * The generated joins are storend
- * in ues_state->expanding joins and
- * ues_state->filter_joins.
- * 
- * To do so, we iterate over all
- * candidate_keys if they have a
- * eclass joinclauses with any
- * candidate keys.
- * 
- * This function expects that a 
- * UesState object is stored in 
- * root->join_search_private and
- * ues_state->candidate_keys not
- * to be empty.  
- */
-static void
-ues_get_all_joins(PlannerInfo *root)
-{
-    UesState*       ues_state;
-
-    ListCell*       lc_outer;
-    ListCell*       lc_inner;
-    UesJoinInfo*    join_info;
-    UesJoinType     join_type;
-    UesJoinKey*     key_outer;
-    UesJoinKey*     key_inner;
-
-    ues_state = (UesState*) root->join_search_private;
-
-    /* outer loop for all candidate keys */
-    foreach(lc_outer, ues_state->candidate_keys)
-    {
-        key_outer = (UesJoinKey*) lfirst(lc_outer);
-
-        /**
-         * Inner loop for all candidate keys.
-         * 
-         * We can start at the index of the outer loop
-         * because the key pairs that are potentially 
-         * skipped are covered in the other direction. 
-         * Since the direction of the JoinInfo elements 
-         * doesn't matter, this works.
-         */
-        for_each_from(lc_inner, ues_state->candidate_keys, foreach_current_index(lc_outer)+1)
-        {
-            key_inner = (UesJoinKey*) lfirst(lc_inner);
-                       
-            /* skip, if both keys haven't common join */
-            if(!have_relevant_eclass_joinclause(root, key_outer->baserel, key_inner->baserel))
-            {
-                continue;
-            }
-
-            join_type = ues_get_jointype(key_outer, key_inner);
-
-            /* put UesJoinInfo together */
-            join_info = (UesJoinInfo*) palloc(sizeof(UesJoinInfo));
-            join_info->join_type = join_type;
-            join_info->rel1 = key_outer;
-            join_info->rel2 = key_inner;
-            join_info->upper_bound = get_upper_bound_old(root, key_outer, key_inner);
-            
-            /* Adding the join_info to corresponding list */
-            if(join_type == UES_JOIN_EXPANDING)
-            {
-                ues_state->expanding_joins = lappend(ues_state->expanding_joins, join_info);
-            }else
-            {
-                ues_state->filter_joins = lappend(ues_state->filter_joins, join_info);
-            }
-        } /* end of inner loop*/
-    } /* end of outer loop */
-    
-    /**
-     * At last we sort the elements of both 
-     * lists based on their upperbounds. So
-     * we can assue in all other functions
-     * the lists as sorted. 
-     */
-    list_sort(ues_state->expanding_joins, compare_UesJoinInfo);
-    list_sort(ues_state->filter_joins, compare_UesJoinInfo);
-}
-
-UpperBound get_upper_bound_old(PlannerInfo* root, UesJoinKey* left_key, UesJoinKey* right_key)
-{
-    // TODO: muss für Filter nicht berechnet werden.
-    Freq            freq_left,
-                    freq_right;
-    Cardinality     card_left,
-                    card_right;
-    double  maximal_pair_appearance;
-    double  most_common_values_prod;
-    double  max_apperance_left;
-    double  max_appearance_right;
-
-    freq_left = left_key->max_freq;
-    freq_right = right_key->max_freq;
-
-    card_left = left_key->baserel->tuples;
-    card_right = right_key->baserel->tuples;
-
-    max_apperance_left = card_left / freq_left;
-    max_appearance_right = card_right / freq_right;
-
-    maximal_pair_appearance = Min(max_apperance_left, max_appearance_right);
-
-    most_common_values_prod = freq_left * freq_right;
-
-    // Oid rel1 = root->simple_rte_array[left_key->baserel->relid]->relid;
-    // Oid rel2 = root->simple_rte_array[right_key->baserel->relid]->relid;
-    // elog(NOTICE, "\ncalc upper_bound for \033[1;36m%s\033[0m and \033[1;36m%s\033[0m\n\
-    //     card_left: %f\ncard_right: %f\nmax_app_left: %f\nmax_app_right: %f\n\
-    //     max_pair: %f\nmost_common: %f\n\n", get_rel_name(rel1), get_rel_name(rel2), card_left, card_right, max_apperance_left, max_appearance_right, maximal_pair_appearance, most_common_values_prod);
-
-    return (UpperBound) maximal_pair_appearance * most_common_values_prod;
-}
-
 UpperBound get_upper_bound_new(PlannerInfo* root, UesJoinKey* left_key, UesJoinKey* right_key)
 {
     // TODO: muss für Filter nicht berechnet werden.
@@ -385,20 +266,18 @@ UpperBound get_upper_bound_new(PlannerInfo* root, UesJoinKey* left_key, UesJoinK
                     freq_right;
     Cardinality     card_left,
                     card_right;
-
-    ues_state = root->join_search_private; 
-
     double maximal_pair_appearance;
     double most_common_values_prod;
     double max_apperance_left;
     double max_appearance_right;
 
+    ues_state = root->join_search_private; 
+    
     freq_left = left_key->max_freq;
     freq_right = right_key->max_freq;
 
     card_left = ues_state->current_bound;
-    card_right = right_key->baserel->tuples;
-    // TODO: rows statt tuples benutzen
+    card_right = right_key->baserel->rows;
     // TODO: fix freq
 
     max_apperance_left = card_left / freq_left;
@@ -408,11 +287,13 @@ UpperBound get_upper_bound_new(PlannerInfo* root, UesJoinKey* left_key, UesJoinK
 
     most_common_values_prod = freq_left * freq_right;
 
-    // Oid rel1 = root->simple_rte_array[left_key->baserel->relid]->relid;
-    // Oid rel2 = root->simple_rte_array[right_key->baserel->relid]->relid;
-    // elog(NOTICE, "\n\ncard_left: %f\ncard_right: %f\nmax_app_left: %f\nmax_app_right: %f\n\\
-    //     max_pair: %f\nmost_common: %f\n\n", 
-    //     card_left, card_right, max_apperance_left, max_appearance_right, maximal_pair_appearance, most_common_values_prod);
+    /*
+    Oid rel1 = root->simple_rte_array[left_key->baserel->relid]->relid;
+    Oid rel2 = root->simple_rte_array[right_key->baserel->relid]->relid;
+    elog(NOTICE, "\n\ncard_left: %f\ncard_right: %f\nmax_app_left: %f\nmax_app_right: %f\n\\
+        max_pair: %f\nmost_common: %f\n\n", 
+        card_left, card_right, max_apperance_left, max_appearance_right, maximal_pair_appearance, most_common_values_prod);
+    */
 
     return (UpperBound) maximal_pair_appearance * most_common_values_prod;
 }
@@ -453,75 +334,6 @@ compare_UesJoinInfo(const ListCell *a, const ListCell *b)
  * There should't be any cases where we run into this function
  * without any joins available. Nevertheless we cover this case.
  */
-RelOptInfo* ues_get_start_rel(PlannerInfo* root)
-{
-    UesState*       ues_state;
-    UesJoinInfo*    join;
-    List*           affected_keys; /* not used in this context */
-
-    /* debug print */
-    #ifdef DEBUG
-    elog(NOTICE, "\033[1;32m[called]\033[0m ues_get_start_rel");
-    #endif
-
-    ues_state = root->join_search_private;
-    affected_keys = NIL;
-
-    /**
-     * If there are expanding joins available
-     * we take one, if not we are taking a
-     * filter join.
-     * If nothing we take an error.
-     */
-    if(ues_state->expanding_joins != NIL &
-        ues_state->expanding_joins->length > 0){
-
-        /* debug print */
-        #ifdef DEBUG
-        elog(NOTICE, "%d expanding join(s) are available", ues_state->expanding_joins->length);
-        #endif
-
-        /* get our join with the lowest upper_bound */
-        join = (UesJoinInfo*) linitial(ues_state->expanding_joins);
-
-    }else if(ues_state->filter_joins != NIL &
-        ues_state->filter_joins->length > 0)
-    {
-        /* debug print */
-        #ifdef DEBUG
-        elog(NOTICE, "There are no expanding joins available, but %d filter join(s)", ues_state->filter_joins->length);
-        #endif
-
-        /* get our join with the lowest upper_bound */
-        join = (UesJoinInfo*) linitial(ues_state->filter_joins);
-        
-    }else{
-        elog(ERROR, "There are no expanding joins and no filter joins available. This query is not determining");
-    }
-    
-    /**
-     * Update Rules:
-     * We have to set the upper_bound of
-     * our relation to the current_bound,
-     * because we are kind of joining
-     * into our current_intermediate.
-     * 
-     * We also have to move the key into
-     * the joined_keys list when chosing 
-     * a candidat_key.
-     */
-    ues_state->current_bound = join->rel1->baserel->tuples;
-    ues_switch_key_in_list(root, join->rel1, &affected_keys);
-    
-    /* debug print */
-    #ifdef DEBUG
-    elog(NOTICE, "\033[1;32m[finished]\033[0m ues_get_start_rel");
-    #endif
-
-    return join->rel1->baserel;    
-
-}
-
 RelOptInfo* ues_get_start_rel_alt(PlannerInfo* root)
 {
     UesState*       ues_state;
@@ -534,11 +346,15 @@ RelOptInfo* ues_get_start_rel_alt(PlannerInfo* root)
 
     /* debug print */
     #ifdef DEBUG
+    Oid oid;
+    char* name_rel;
+    char* name_att;
     elog(NOTICE, "\033[1;32m[called]\033[0m ues_get_start_rel");
     #endif
 
     ues_state = root->join_search_private;
     min_bound = DBL_MAX;
+    min_rel = NULL;
     affected_keys = NIL;
 
     foreach(lc, ues_state->candidate_keys)
@@ -555,9 +371,9 @@ RelOptInfo* ues_get_start_rel_alt(PlannerInfo* root)
     }
 
     #ifdef DEBUG
-    Oid oid = root->simple_rte_array[min_rel->baserel->relid]->relid;
-    char* name_rel = get_rel_name(oid);
-    char* name_att = get_attname(oid, min_rel->join_key->varattno, false);
+    oid = root->simple_rte_array[min_rel->baserel->relid]->relid;
+    name_rel = get_rel_name(oid);
+    name_att = get_attname(oid, min_rel->join_key->varattno, false);
     elog(NOTICE, "\tfound first row %s from rel \033[1;36m%s\033[0m", name_att, name_rel);
     #endif
 
@@ -581,7 +397,6 @@ RelOptInfo* ues_get_start_rel_alt(PlannerInfo* root)
     #endif
 
     return min_rel->baserel;    
-
 }
 
 /*
@@ -683,9 +498,12 @@ ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey, List** affected_keys
     ListCell*   cell;
     ListCell*   lc_ck;
     ListCell*   lc_cak;
-    Oid         rel;
-    char*       name_rel;
-    char*       name_att;
+
+    #ifdef DEBUG
+    Oid rel;
+    char* name_rel;
+    char* name_att;
+    #endif
 
     ues_state = root->join_search_private;
     cell = NULL;
@@ -703,10 +521,10 @@ ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey, List** affected_keys
         if(key->baserel == affected->baserel)
         {
             #ifdef DEBUG
-            Oid relA = root->simple_rte_array[affected->baserel->relid]->relid;
-            char* name_relA = get_rel_name(relA);
-            char* name_attA = get_attname(relA, affected->join_key->varattno, false);
-            elog(NOTICE, "affected: %s from rel \033[1;36m%s\033[0m", name_attA, name_relA);
+            rel = root->simple_rte_array[affected->baserel->relid]->relid;
+            name_rel = get_rel_name(rel);
+            name_att = get_attname(rel, affected->join_key->varattno, false);
+            elog(NOTICE, "affected: %s from rel \033[1;36m%s\033[0m", name_att, name_rel);
             #endif
 
             *affected_keys = lappend(*affected_keys, affected);
@@ -731,8 +549,11 @@ ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey, List** affected_keys
 
         if(cell == NULL)
         {
+            elog(NOTICE, "KEINEN PASSENDEN KEY GEFUNDEN");
             continue;
         }
+
+        elog(NOTICE, "PASSENDEN KEY GEFUNDEN");
 
         ues_state->candidate_keys = list_delete_cell(ues_state->candidate_keys, cell);
         ues_state->joined_keys = lappend(ues_state->joined_keys, key_to_change);
@@ -770,15 +591,10 @@ RelOptInfo*
 ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoinInfo* jinfo)
 {
     RelOptInfo*     join;
-    UesJoinInfo*    info;
     UesState*       ues_state;
-    ListCell*       cell;
-    ListCell*       lc;
-    UesJoinInfo*    dummy;
     List*           affected_joinkeys;
 
     ues_state = root->join_search_private;
-    info = jinfo;
     affected_joinkeys = NIL;
 
     #ifdef DEBUG
@@ -912,15 +728,21 @@ ues_join_filters(PlannerInfo* root, RelOptInfo* jrel)
     UesJoinInfo*    filter;
     RelOptInfo*     filter_rel1;
     RelOptInfo*     filter_rel2;
-    Oid             rel_oid;
-    char*           relname;
+
+    #ifdef DEBUG
+    char* relname;
+    Oid rel_oid;
+    int i;
+    #endif
 
     ues_state = root->join_search_private;
     rel = jrel;
     interrupted = true;
 
     #ifdef DEBUG
-    if(jrel->rtekind == RTE_RELATION)
+    i = 0;
+
+    if(rel->rtekind == RTE_RELATION)
     {
         rel_oid = root->simple_rte_array[rel->relid]->relid;
         relname = get_rel_name(rel_oid);
@@ -940,8 +762,6 @@ ues_join_filters(PlannerInfo* root, RelOptInfo* jrel)
     * a run-through without any new joins we are
     * finished here.
     */
-    
-    int i = 0;
     while(ues_state->filter_joins != NULL &&
             ues_state->filter_joins != NIL && 
             interrupted)
@@ -1010,10 +830,24 @@ ues_join_filters(PlannerInfo* root, RelOptInfo* jrel)
     return rel;
 }
 
+/**
+ * Determine the UesJoinType of two UesJoinKey elements
+ * 
+ * That means check if the join is a filter or
+ * an expanding join
+ */
 UesJoinType
 ues_get_jointype(UesJoinKey* key1, UesJoinKey* key2)
 {
     UesJoinType     join_type;
+
+    /**
+     * we have to define it here as expanding instead of
+     * using another else case at the end becuase otherwise 
+     * the compiler throws a warning that join_type could
+     * be not initialized.
+     */
+    join_type = UES_JOIN_EXPANDING;
 
     if(key1->key_type == KT_PRIMARY)
     {
@@ -1027,9 +861,6 @@ ues_get_jointype(UesJoinKey* key1, UesJoinKey* key2)
         {
             join_type = UES_JOIN_FILTER;
         }
-    }else
-    {
-        join_type = UES_JOIN_EXPANDING;
     }
 
     return join_type;
@@ -1121,6 +952,13 @@ ues_get_possible_joins(PlannerInfo* root)
     UesJoinType     join_type;
 
     #ifdef DEBUG
+    Oid rel1;
+    Oid rel2;
+    char* rel1_name;
+    char* rel2_name;
+    char* rel1_var;
+    char* rel2_var;
+    
     elog(NOTICE, "\033[1;32m[updating]\033[0m joinrels");
     #endif
 
@@ -1208,12 +1046,12 @@ ues_get_possible_joins(PlannerInfo* root)
             }
 
             #ifdef DEBUG
-            Oid rel1 = root->simple_rte_array[parent_key->baserel->relid]->relid;
-            Oid rel2 = root->simple_rte_array[join_key->baserel->relid]->relid;
-            char* rel1_name = get_rel_name(rel1);
-            char* rel2_name = get_rel_name(rel2);
-            char* rel1_var = get_attname(rel1, parent_key->join_key->varattno, false);
-            char* rel2_var = get_attname(rel2, join_key->join_key->varattno, false);
+            rel1 = root->simple_rte_array[parent_key->baserel->relid]->relid;
+            rel2 = root->simple_rte_array[join_key->baserel->relid]->relid;
+            rel1_name = get_rel_name(rel1);
+            rel2_name = get_rel_name(rel2);
+            rel1_var = get_attname(rel1, parent_key->join_key->varattno, false);
+            rel2_var = get_attname(rel2, join_key->join_key->varattno, false);
             elog(NOTICE, "check joinbarkeit von: \033[1;33m%s\033[0m.%s und \033[1;33m%s\033[0m.%s",\
                 rel1_name, rel1_var, rel2_name, rel2_var);
             #endif
@@ -1238,8 +1076,8 @@ ues_get_possible_joins(PlannerInfo* root)
              */
             join_info = (UesJoinInfo*) palloc(sizeof(UesJoinInfo));
             join_info->join_type = join_type;
-            join_info->rel1 = join_key;
-            join_info->rel2 = parent_key;
+            join_info->rel1 = parent_key;
+            join_info->rel2 = join_key;
             join_info->upper_bound = get_upper_bound_new(root, parent_key, join_key);
             
             /**
@@ -1310,12 +1148,12 @@ ues_get_possible_joins(PlannerInfo* root)
             }
             
             #ifdef DEBUG
-            Oid rel1 = root->simple_rte_array[parent_key->baserel->relid]->relid;
-            Oid rel2 = root->simple_rte_array[join_key->baserel->relid]->relid;
-            char* rel1_name = get_rel_name(rel1);
-            char* rel2_name = get_rel_name(rel2);
-            char* rel1_var = get_attname(rel1, parent_key->join_key->varattno, false);
-            char* rel2_var = get_attname(rel2, join_key->join_key->varattno, false);
+            rel1 = root->simple_rte_array[parent_key->baserel->relid]->relid;
+            rel2 = root->simple_rte_array[join_key->baserel->relid]->relid;
+            rel1_name = get_rel_name(rel1);
+            rel2_name = get_rel_name(rel2);
+            rel1_var = get_attname(rel1, parent_key->join_key->varattno, false);
+            rel2_var = get_attname(rel2, join_key->join_key->varattno, false);
             elog(NOTICE, "check joinbarkeit von: \033[1;33m%s\033[0m.%s und \033[1;33m%s\033[0m.%s",\
                 rel1_name, rel1_var, rel2_name, rel2_var);
             #endif
@@ -1340,8 +1178,8 @@ ues_get_possible_joins(PlannerInfo* root)
              */
             join_info = (UesJoinInfo*) palloc(sizeof(UesJoinInfo));
             join_info->join_type = join_type;
-            join_info->rel1 = join_key;
-            join_info->rel2 = parent_key;
+            join_info->rel1 = parent_key;
+            join_info->rel2 = join_key;
             join_info->upper_bound = get_upper_bound_new(root, parent_key, join_key);
             
             /**
@@ -1405,22 +1243,27 @@ ues_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
     }
 
     /* use UES */
-    return ues_join_rels(root, levels_needed, initial_rels);
+    return ues_join_rels(root, initial_rels);
 
 }
 
 RelOptInfo* 
-ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
+ues_join_rels(PlannerInfo* root, List* initial_rels)
 {
     UesState*       ues_state;
     RelOptInfo*     joinrel;
     RelOptInfo*     next_join;
-    UesJoinInfo*    filter;
     UesJoinInfo*    expanding;
-    RelOptInfo*     filter_rel1;
-    RelOptInfo*     filter_rel2;
-    ListCell*       lcfj;
     
+    /* debug stuff */
+    #ifdef DEBUG
+    StringInfo msg;
+    Oid start_rel;
+    Oid next_join_oid;
+    int loop_count;
+    loop_count = 0;
+    #endif
+
     /**
      * Before starting with the core
      * UES stuff we have to set up
@@ -1433,13 +1276,6 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
     
     #ifdef DEBUG
     ues_print_state(root, ues_state);
-    #endif
-    
-    /* debug stuff */
-    #ifdef DEBUG
-    StringInfo msg;
-    int loop_count;
-    loop_count = 0;
     #endif
     
     /**
@@ -1456,7 +1292,7 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
      * 1. To find a relation to start
      * with, we have to generate all
      * possible joins across our 
-     * candidate_keys and have to decide
+     * candidate_kes and have to decide
      * if they are expanding or filter
      * joins. We prefer a expanding join
      * over a filter join but for
@@ -1483,7 +1319,7 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
 
     /* debug print */
     #ifdef DEBUG
-    Oid start_rel = root->simple_rte_array[ues_state->current_intermediate->relid]->relid;
+    start_rel = root->simple_rte_array[ues_state->current_intermediate->relid]->relid;
     elog(NOTICE, "initial relation set: \033[1;31m%s\033[0m", get_rel_name(start_rel));
     #endif
     
@@ -1532,7 +1368,7 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
      */
     while((ues_state->candidate_keys != NULL && 
             ues_state->candidate_keys != NIL) && 
-            !ues_state->candidate_keys->length <= 0)
+            !(ues_state->candidate_keys->length <= 0))
     {
         
         /* debug print*/
@@ -1561,7 +1397,7 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
          */
         if(ues_state->expanding_joins == NULL)
         {
-            elog(ERROR, "There are no joins left but still candidate_keys. \\
+            elog(ERROR, "There are no joins left but still candidate_keys. \
                 This means the join operation can not be performed");
         }
 
@@ -1571,7 +1407,7 @@ ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels)
 
         /* debug print */
         #ifdef DEBUG
-        Oid next_join_oid = root->simple_rte_array[next_join->relid]->relid;
+        next_join_oid = root->simple_rte_array[next_join->relid]->relid;
         elog(NOTICE, "expanding join performed: \033[1;31m%s\033[0m", get_rel_name(next_join_oid));
         #endif
 

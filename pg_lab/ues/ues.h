@@ -1,3 +1,8 @@
+#ifndef DEBUG
+    #define UNUSED __attribute__((unused))
+#else
+    #define UNUSED
+#endif
 
 typedef double Freq;
 
@@ -78,23 +83,63 @@ typedef struct UesJoinInfo
     UpperBound upper_bound;
 }UesJoinInfo;
 
-static UpperBound get_upper_bound_old(PlannerInfo* info, UesJoinKey* key1, UesJoinKey* key2);
+/**
+ * central functions in control flow
+ */
+/* PostgreSQL Hook */
+RelOptInfo* 
+ues_join_search(PlannerInfo *root, int levels_needed, List *initial_rels);
 
-static UpperBound get_upper_bound_new(PlannerInfo* root, UesJoinKey* left_key, UesJoinKey* right_key);
+/* control flow management */
+RelOptInfo* 
+ues_join_rels(PlannerInfo* root, List* initial_rels);
 
-//RelOptInfo* ues_next_join(PlannerInfo* root);
+/**
+ * init and main join functions
+ */
+RelOptInfo*
+ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoinInfo* jinfo);
+
+RelOptInfo*
+ues_join_filters(PlannerInfo* root, RelOptInfo* jrel);
 
 RelOptInfo* 
-ues_join_rels(PlannerInfo* root, int levels_neded, List* initial_rels);
-
-static int
-compare_UesJoinInfo(const ListCell *a, const ListCell *b);
-
-void
-ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey, List** affected_keys);
+ues_get_start_rel_alt(PlannerInfo* root);
 
 void
 ues_get_possible_joins(PlannerInfo* root);
 
+RelOptInfo* 
+ues_next_join(PlannerInfo* root, UesJoinInfo** ujinfo);
+
+/**
+ * downstream functions for ues
+ */
+void
+ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey, List** affected_keys);
+
+static UpperBound 
+get_upper_bound_new(PlannerInfo* root, UesJoinKey* left_key, UesJoinKey* right_key);
+
+/**
+ * helper functions
+ */
+/* compare two UesJoinKey elments with list_sort() */
+static int
+compare_UesJoinInfo(const ListCell *a, const ListCell *b);
+
 UesJoinType
 ues_get_jointype(UesJoinKey* key1, UesJoinKey* key2);
+
+bool
+have_vars_join_relation(PlannerInfo* root, Var* var1, Var* var2);
+
+/**
+ * debug prints
+ */
+static void
+ues_print_state(PlannerInfo *root, UesState *ues_state) UNUSED;
+
+static void
+ues_print_joins(PlannerInfo *root, UesState *ues_state) UNUSED;
+

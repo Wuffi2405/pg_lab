@@ -29,7 +29,8 @@ MODULES = ues
 GDB_MODE = $(MODE)
 
 # this are our default flags that we use every time
-MYFLAGS = -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wformat=2 -Wnull-dereference -Wdouble-promotion -Wfloat-equal -Wstack-protector -Wunreachable-code -Wstack-usage=1024
+MYFLAGS = -Wextra -Wall -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wformat=2 -Wdouble-promotion -Wfloat-equal -Wstack-protector -Wunreachable-code -Wstack-usage=1024
+#MYFLAGS += -Wnull-dereference
 #-fsanitize=address,undefined -fstack-protector-strong
 
 #
@@ -49,9 +50,6 @@ MYFLAGS += -DDEBUG
 $(info compile with debug prints)
 endif
 
-# transfer our custom compiler flags to PG_CFLAGS
-export PG_CFLAGS = $(MYFLAGS)
-
 #
 # makes it possible to give the Makefile a custom
 # pg_config location. 
@@ -62,6 +60,11 @@ $(info custom pg_config path set: $(CONFIG))
 else
 PG_CONFIG = ../../postgres-server/dist/bin/pg_config
 endif
+
+MYFLAGS += -isystem $(shell $(PG_CONFIG) --includedir-server)
+
+# transfer our custom compiler flags to PG_CFLAGS
+export PG_CFLAGS = $(MYFLAGS)
 
 # trigger compiling
 PGXS := $(shell $(PG_CONFIG) --pgxs)
