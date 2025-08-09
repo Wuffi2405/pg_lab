@@ -116,7 +116,10 @@ ues_next_join(PlannerInfo* root, UesJoinInfo** ujinfo);
  * downstream functions for ues
  */
 void
-ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey, List** affected_keys);
+ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey);
+
+void
+ues_get_affected_joinkeys(PlannerInfo* root, List** keys, RelOptInfo* rel);
 
 static UpperBound 
 get_upper_bound_new(PlannerInfo* root, UesJoinKey* left_key, UesJoinKey* right_key);

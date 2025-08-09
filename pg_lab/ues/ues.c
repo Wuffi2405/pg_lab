@@ -100,7 +100,7 @@ ues_print_state(PlannerInfo *root, UesState *ues_state)
         char *relname = get_rel_name(rel);
         char *attname = get_attname(rel, key->join_key->varattno, false);
         char *keytype = key->key_type == KT_PRIMARY ? " [PK]" : (key->key_type == KT_FOREIGN ? " [FK]" : "");
-        appendStringInfo(msg, "\n\t%s.%s: MF=%f%s;", relname, attname, key->max_freq, keytype);
+        appendStringInfo(msg, "\n\t\033[1;36m%s\033[0m.\033[1;35m%s\033[0m: MF=%f%s;", relname, attname, key->max_freq, keytype);
     }
     
     elog(INFO, "UES state: %s", msg->data);
@@ -389,7 +389,7 @@ RelOptInfo* ues_get_start_rel_alt(PlannerInfo* root)
      * a candidat_key.
      */
     ues_state->current_bound = min_bound;
-    ues_switch_key_in_list(root, min_rel, &affected_keys);
+    ues_switch_key_in_list(root, min_rel);
     
     /* debug print */
     #ifdef DEBUG
@@ -487,91 +487,105 @@ RelOptInfo* ues_next_join(PlannerInfo* root, UesJoinInfo** ujinfo)
 }
 
 void
-ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey, List** affected_keys)
+ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* key)
 {
     UesState*   ues_state;
-    UesJoinKey* key;
     UesJoinKey* dummy;
     UesJoinKey* affected;
-    UesJoinKey* key_to_change;
     ListCell*   lc;
     ListCell*   cell;
-    ListCell*   lc_ck;
     ListCell*   lc_cak;
 
     #ifdef DEBUG
-    Oid rel;
+    Oid oid;
     char* name_rel;
     char* name_att;
     #endif
 
     ues_state = root->join_search_private;
     cell = NULL;
-    key = jkey;
-    *affected_keys = NIL;
 
     #ifdef DEBUG
     elog(NOTICE, "\033[1;32m[called]\033[0m ues_switch_key_in_list");
     #endif
 
-    foreach(lc_ck, ues_state->candidate_keys)
-    {
-        affected = (UesJoinKey*) lfirst(lc_ck);
+    // if(list_member(ues_state->candidate_keys, key))
+    // {
+    // foreach(lc_cak, *affected_keys)
+    // {
+    //     key_to_change = (UesJoinKey*) lfirst(lc_cak);
 
-        if(key->baserel == affected->baserel)
+    foreach(lc, ues_state->candidate_keys)
+    {   
+        dummy = (UesJoinKey*) lfirst(lc);
+        if(dummy == key)
         {
-            #ifdef DEBUG
-            rel = root->simple_rte_array[affected->baserel->relid]->relid;
-            name_rel = get_rel_name(rel);
-            name_att = get_attname(rel, affected->join_key->varattno, false);
-            elog(NOTICE, "affected: %s from rel \033[1;36m%s\033[0m", name_att, name_rel);
-            #endif
-
-            *affected_keys = lappend(*affected_keys, affected);
+            cell = lc;
+            break;
         }
     }
 
-    // if(list_member(ues_state->candidate_keys, key))
-    // {
-    foreach(lc_cak, *affected_keys)
+    if(cell == NULL)
     {
-        key_to_change = (UesJoinKey*) lfirst(lc_cak);
+        return;
+    }
 
-        foreach(lc, ues_state->candidate_keys)
-        {   
-            dummy = (UesJoinKey*) lfirst(lc);
-            if(dummy == key_to_change)
-            {
-                cell = lc;
-                break;
-            }
-        }
-
-        if(cell == NULL)
-        {
-            elog(NOTICE, "KEINEN PASSENDEN KEY GEFUNDEN");
-            continue;
-        }
-
-        elog(NOTICE, "PASSENDEN KEY GEFUNDEN");
-
-        ues_state->candidate_keys = list_delete_cell(ues_state->candidate_keys, cell);
-        ues_state->joined_keys = lappend(ues_state->joined_keys, key_to_change);
-        
-        #ifdef DEBUG
-        rel = root->simple_rte_array[key_to_change->baserel->relid]->relid;
-        name_rel = get_rel_name(rel);
-        name_att = get_attname(rel, key_to_change->join_key->varattno, false);
-        elog(NOTICE, "\tswitched %s from rel \033[1;36m%s\033[0m", name_att, name_rel);
-        #endif
-    }   
+    ues_state->candidate_keys = list_delete_cell(ues_state->candidate_keys, cell);
+    ues_state->joined_keys = lappend(ues_state->joined_keys, key);
+    
+    #ifdef DEBUG
+    oid = root->simple_rte_array[key->baserel->relid]->relid;
+    name_rel = get_rel_name(oid);
+    name_att = get_attname(oid, key->join_key->varattno, false);
+    elog(NOTICE, "switched \033[1;35m%s\033[0m from rel \033[1;36m%s\033[0m", name_att, name_rel);
+    #endif
+    //}   
     // }
 
     #ifdef DEBUG
     elog(NOTICE, "\033[1;32m[finished]\033[0m ues_switch_key_in_list");
-    ues_print_state(root, ues_state);
+    //ues_print_state(root, ues_state);
     #endif
 
+}
+
+void
+ues_get_affected_joinkeys(PlannerInfo* root, List** keys, RelOptInfo* rel)
+{
+    UesState*       ues_state;
+    ListCell*       lc;
+    UesJoinKey*     affected;
+
+    #ifdef DEBUG
+    Oid oid;
+    char* name_rel;
+    char* name_att;
+
+    elog(NOTICE, "\033[1;32m[called]\033[0m ues_get_affected_joinkeys");
+    #endif
+    
+    ues_state = root->join_search_private;
+    
+    foreach(lc, ues_state->candidate_keys)
+    {
+        affected = (UesJoinKey*) lfirst(lc);
+
+        if(rel == affected->baserel)
+        {
+            #ifdef DEBUG
+            oid = root->simple_rte_array[affected->baserel->relid]->relid;
+            name_rel = get_rel_name(oid);
+            name_att = get_attname(oid, affected->join_key->varattno, false);
+            elog(NOTICE, "affected: \033[1;35m%s\033[0m from rel \033[1;36m%s\033[0m", name_att, name_rel);
+            #endif
+
+            *keys = lappend(*keys, affected);
+        }
+    }
+
+    #ifdef DEBUG
+    elog(NOTICE, "\033[1;32m[finished]\033[0m ues_get_affected_joinkeys");
+    #endif
 }
 
 /*
@@ -586,6 +600,13 @@ ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey, List** affected_keys
  * c) update frequencies
  * d) perform the join
  * e) rebuild expanding_joins and filter_joins list
+ * 
+ * 
+ * IMPORTANT NOTE: We assume that rel1 itself and rel1
+ * in jinfo is always the parent join_key. That means
+ * rel1 is the key that is already part of the
+ * current_intermediate and rel2 is always the key that
+ * we want to join.
  */
 RelOptInfo*
 ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoinInfo* jinfo)
@@ -593,6 +614,8 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
     RelOptInfo*     join;
     UesState*       ues_state;
     List*           affected_joinkeys;
+    ListCell*       lc_aff;
+    UesJoinKey*     affected_joinkey;
 
     ues_state = root->join_search_private;
     affected_joinkeys = NIL;
@@ -600,14 +623,23 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
     #ifdef DEBUG
     elog(NOTICE, "\033[1;32m[called]\033[0m ues_make_join_rel");
     #endif
-    /*
-     * a) At first we have to move the used keys
-     * from the candidate_keys list into the
-     * joined_keys list.
+
+    /**
+     * before of all we have to get the affected
+     * keys.
      */
-    //ues_switch_key_in_list(root, rel2, &affected_joinkeys);
-    ues_switch_key_in_list(root, jinfo->rel1, &affected_joinkeys);
-    ues_switch_key_in_list(root, jinfo->rel2, &affected_joinkeys);
+    ues_get_affected_joinkeys(root, &affected_joinkeys, rel2);
+
+    foreach(lc_aff, affected_joinkeys)
+    {
+        affected_joinkey = (UesJoinKey*) lfirst(lc_aff);
+        /*
+         * a) At first we have to move the used keys
+         * from the candidate_keys list into the
+         * joined_keys list.
+         */
+        ues_switch_key_in_list(root, affected_joinkey);
+    }
 
     /*
      * b) update the key types. When joining a
@@ -1052,7 +1084,9 @@ ues_get_possible_joins(PlannerInfo* root)
             rel2_name = get_rel_name(rel2);
             rel1_var = get_attname(rel1, parent_key->join_key->varattno, false);
             rel2_var = get_attname(rel2, join_key->join_key->varattno, false);
-            elog(NOTICE, "check joinbarkeit von: \033[1;33m%s\033[0m.%s und \033[1;33m%s\033[0m.%s",\
+            elog(NOTICE, 
+                "check joinbarkeit von: \033[1;36m%s\033[0m.\033[1;35m%s\033[0m und "
+                "\033[1;36m%s\033[0m.\033[1;35m%s\033[0m",
                 rel1_name, rel1_var, rel2_name, rel2_var);
             #endif
             
@@ -1154,7 +1188,9 @@ ues_get_possible_joins(PlannerInfo* root)
             rel2_name = get_rel_name(rel2);
             rel1_var = get_attname(rel1, parent_key->join_key->varattno, false);
             rel2_var = get_attname(rel2, join_key->join_key->varattno, false);
-            elog(NOTICE, "check joinbarkeit von: \033[1;33m%s\033[0m.%s und \033[1;33m%s\033[0m.%s",\
+            elog(NOTICE, 
+                "check joinbarkeit von: \033[1;36m%s\033[0m.\033[1;35m%s\033[0m und "
+                "\033[1;36m%s\033[0m.\033[1;35m%s\033[0m", 
                 rel1_name, rel1_var, rel2_name, rel2_var);
             #endif
             
