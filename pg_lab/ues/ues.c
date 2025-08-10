@@ -15,8 +15,6 @@
 
 #include "ues.h"
 
-#define DEBUG
-
 PG_MODULE_MAGIC;
 
 extern join_search_hook_type join_search_hook;
@@ -341,7 +339,6 @@ RelOptInfo* ues_get_start_rel_alt(PlannerInfo* root)
     UesJoinKey*     rel;
     UesJoinKey*     min_rel;
     UpperBound      min_bound;
-    List*           affected_keys; /* not used in this context */
 
 
     /* debug print */
@@ -355,7 +352,6 @@ RelOptInfo* ues_get_start_rel_alt(PlannerInfo* root)
     ues_state = root->join_search_private;
     min_bound = DBL_MAX;
     min_rel = NULL;
-    affected_keys = NIL;
 
     foreach(lc, ues_state->candidate_keys)
     {
@@ -491,10 +487,8 @@ ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* key)
 {
     UesState*   ues_state;
     UesJoinKey* dummy;
-    UesJoinKey* affected;
     ListCell*   lc;
     ListCell*   cell;
-    ListCell*   lc_cak;
 
     #ifdef DEBUG
     Oid oid;
@@ -508,12 +502,6 @@ ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* key)
     #ifdef DEBUG
     elog(NOTICE, "\033[1;32m[called]\033[0m ues_switch_key_in_list");
     #endif
-
-    // if(list_member(ues_state->candidate_keys, key))
-    // {
-    // foreach(lc_cak, *affected_keys)
-    // {
-    //     key_to_change = (UesJoinKey*) lfirst(lc_cak);
 
     foreach(lc, ues_state->candidate_keys)
     {   
