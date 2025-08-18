@@ -9,6 +9,7 @@
 #include "optimizer/paths.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/tlist.h"
+#include "utils/datum.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
@@ -102,6 +103,40 @@ ues_print_state(PlannerInfo *root, UesState *ues_state)
     }
     
     elog(INFO, "UES state: %s", msg->data);
+    destroyStringInfo(msg);
+}
+
+static void
+ues_print_all_keys(PlannerInfo* root, UesState* ues_state)
+{
+    ListCell*    lc;
+    StringInfo   msg = makeStringInfo();
+
+    appendStringInfo(msg, "\nCandidate keys:");
+    foreach(lc, ues_state->candidate_keys)
+    {
+        UesJoinKey* key = (UesJoinKey*) lfirst(lc);
+        Oid         oid = root->simple_rte_array[key->baserel->relid]->relid;
+
+        char*   relname = get_rel_name(oid);
+        char*   attname = get_attname(oid, key->join_key->varattno, false);
+        char *keytype = key->key_type == KT_PRIMARY ? " [PK]" : (key->key_type == KT_FOREIGN ? " [FK]" : "");
+        appendStringInfo(msg, "\n\t\033[1;36m%s\033[0m.\033[1;35m%s\033[0m: MF=%f%s;", relname, attname, key->max_freq, keytype);
+    }
+
+    appendStringInfo(msg, "\nJoined keys:");
+    foreach(lc, ues_state->joined_keys)
+    {
+        UesJoinKey* key = (UesJoinKey*) lfirst(lc);
+        Oid         oid = root->simple_rte_array[key->baserel->relid]->relid;
+
+        char*   relname = get_rel_name(oid);
+        char*   attname = get_attname(oid, key->join_key->varattno, false);
+        char *keytype = key->key_type == KT_PRIMARY ? " [PK]" : (key->key_type == KT_FOREIGN ? " [FK]" : "");
+        appendStringInfo(msg, "\n\t\033[1;36m%s\033[0m.\033[1;35m%s\033[0m: MF=%f%s;", relname, attname, key->max_freq, keytype);
+    }
+
+    elog(INFO, "All keys: %s", msg->data);
     destroyStringInfo(msg);
 }
 
@@ -336,9 +371,11 @@ RelOptInfo* ues_get_start_rel_alt(PlannerInfo* root)
 {
     UesState*       ues_state;
     ListCell*       lc;
+    ListCell*       lc_aff;
     UesJoinKey*     rel;
     UesJoinKey*     min_rel;
     UpperBound      min_bound;
+    List*           affected_keys;
 
 
     /* debug print */
@@ -352,6 +389,7 @@ RelOptInfo* ues_get_start_rel_alt(PlannerInfo* root)
     ues_state = root->join_search_private;
     min_bound = DBL_MAX;
     min_rel = NULL;
+    affected_keys = NIL;
 
     foreach(lc, ues_state->candidate_keys)
     {
@@ -370,7 +408,7 @@ RelOptInfo* ues_get_start_rel_alt(PlannerInfo* root)
     oid = root->simple_rte_array[min_rel->baserel->relid]->relid;
     name_rel = get_rel_name(oid);
     name_att = get_attname(oid, min_rel->join_key->varattno, false);
-    elog(NOTICE, "\tfound first row %s from rel \033[1;36m%s\033[0m", name_att, name_rel);
+    elog(NOTICE, "\tfound first row \033[1;35m%s\033[0m from rel \033[1;36m%s\033[0m", name_att, name_rel);
     #endif
 
     /**
@@ -380,15 +418,23 @@ RelOptInfo* ues_get_start_rel_alt(PlannerInfo* root)
      * because we are kind of joining
      * into our current_intermediate.
      * 
-     * We also have to move the key into
-     * the joined_keys list when chosing 
-     * a candidat_key.
+     * We also have to move the all 
+     * affected keys into the joined_keys 
+     * list when chosing  a candidate_key.
      */
     ues_state->current_bound = min_bound;
-    ues_switch_key_in_list(root, min_rel);
+    ues_get_affected_joinkeys(root, &affected_keys, min_rel->baserel);
+    foreach(lc_aff, affected_keys)
+    {
+        UesJoinKey* affected_key;
+        affected_key = (UesJoinKey*) lfirst(lc_aff);
+        ues_switch_key_in_list(root, affected_key);
+    }
+    list_free(affected_keys);
     
     /* debug print */
     #ifdef DEBUG
+    ues_print_all_keys(root, ues_state);
     elog(NOTICE, "\033[1;32m[finished]\033[0m ues_get_start_rel");
     #endif
 
@@ -571,10 +617,281 @@ ues_get_affected_joinkeys(PlannerInfo* root, List** keys, RelOptInfo* rel)
         }
     }
 
+    foreach(lc, ues_state->joined_keys)
+    {
+        affected = (UesJoinKey*) lfirst(lc);
+
+        // if(rel == affected->baserel)
+        {
+            #ifdef DEBUG
+            oid = root->simple_rte_array[affected->baserel->relid]->relid;
+            name_rel = get_rel_name(oid);
+            name_att = get_attname(oid, affected->join_key->varattno, false);
+            elog(NOTICE, "affected: \033[1;35m%s\033[0m from rel \033[1;36m%s\033[0m", name_att, name_rel);
+            #endif
+
+            *keys = lappend(*keys, affected);
+        }
+    }
+
     #ifdef DEBUG
     elog(NOTICE, "\033[1;32m[finished]\033[0m ues_get_affected_joinkeys");
     #endif
 }
+
+#ifdef DEBUG
+const char* type_to_string(KeyType type) {
+    switch (type) {
+        case KT_PRIMARY:   return "KT_PRIMARY";
+        case KT_FOREIGN: return "KT_FOREIGN";
+        case KT_NONE:  return "KT_NONE";
+        default:    return "UNKNOWN";
+    }
+}
+#endif
+
+void
+ues_change_keytypes(PlannerInfo* root, UesJoinKey* key_edit, KeyType type_ci, KeyType type_join)
+{
+    UesState* ues_state;
+    
+    #ifdef DEBUG
+    Oid     oid;
+    char*   name_rel;
+    char*   name_att;
+    oid = root->simple_rte_array[key_edit->baserel->relid]->relid;
+    name_rel = get_rel_name(oid);
+    name_att = get_attname(oid, key_edit->join_key->varattno, false);
+    #endif
+
+    ues_state = root->join_search_private;
+
+    #ifdef DEBUG
+    elog(NOTICE, "\033[1;32m[do]\033[0m ues_change_keytypes for: "
+        " \033[1;35m%s\033[0m from rel \033[1;36m%s\033[0m", name_att, name_rel);
+    elog(NOTICE, "Types: %s - %s", type_to_string(type_ci), type_to_string(type_join));
+    #endif
+    
+    if(type_ci == KT_FOREIGN && type_join == KT_FOREIGN)
+    {
+        key_edit->key_type = KT_FOREIGN;
+        return;
+    }
+
+    if(type_ci == KT_PRIMARY && type_join == KT_PRIMARY)
+    {
+        return;
+    }
+
+    if(bms_is_subset(key_edit->baserel->relids, ues_state->current_intermediate->relids))
+    {
+        /**
+         * key ist aus current_intermediate
+         */
+        if(type_ci == KT_PRIMARY)
+        {
+            key_edit->key_type = KT_FOREIGN;
+        }
+
+         return;
+    }else{
+        /**
+         * key ist aus join
+         */
+        if(type_join == KT_PRIMARY)
+        {
+            key_edit->key_type = KT_FOREIGN;
+        }
+
+        return;
+    }
+
+}
+
+void
+ues_update_frequency(PlannerInfo* root, UesJoinKey* key_edit, Freq freq_new, Freq f1, 
+                        Freq f2, UesJoinInfo* jinfo)
+{
+    UesState*       ues_state;
+
+    ues_state = root->join_search_private;
+
+    #ifdef DEBUG
+    elog(NOTICE, "rel1: %f\trel2: %f\tedit: %f",
+                f1, f2, key_edit->max_freq);
+    #endif
+
+    /**
+     * key ist der, der neu ist
+     */
+    if(!bms_is_subset(key_edit->baserel->relids, ues_state->current_intermediate->relids))
+    {
+        if(have_vars_join_relation(root, key_edit->join_key, jinfo->rel1->join_key))
+        {
+            key_edit->max_freq = freq_new;
+            return;
+        }
+        key_edit->max_freq = key_edit->max_freq * f1;
+        return;
+    }
+
+    /**
+     * key ist in current_intermediate
+     * und der, an den gejoint wird.
+     */
+    if(key_edit->baserel == jinfo->rel1->baserel &&
+        have_vars_join_relation(root, key_edit->join_key, jinfo->rel1->join_key))
+    {
+        key_edit->max_freq = freq_new;
+        return;
+    }
+
+
+    /**
+     * 
+     */
+    if(key_edit == jinfo->rel1 || key_edit == jinfo->rel2)
+    {
+        key_edit->max_freq = freq_new;
+        return;
+    }
+    
+    key_edit->max_freq = key_edit->max_freq * f2;
+
+}
+
+/*
+char* datum_to_string(Datum datum, Oid type_oid)
+{
+    // Ausgabekontext erstellen
+    FmgrInfo flinfo;
+    Oid outputFunctionId;
+    bool typIsVarlena;
+    
+    // Output-Funktion für diesen Datentyp finden
+    getTypeOutputInfo(type_oid, &outputFunctionId, &typIsVarlena);
+    fmgr_info(outputFunctionId, &flinfo);
+    
+    // Datum in String umwandeln
+    char* result = OutputFunctionCall(&flinfo, datum);
+    
+    return result;  // Ergebnis muss später mit pfree() freigegeben werden
+}
+*/
+
+/*
+void
+ues_update_stats(PlannerInfo* root, UesJoinInfo* jinfo)
+{
+
+    RelOptInfo*         rel1;
+    RelOptInfo*         rel2;
+    Var*                var1;
+    Var*                var2;
+    AttStatsSlot        sslot1;
+    AttStatsSlot        sslot2;
+    VariableStatData    vardata1;
+    VariableStatData    vardata2;
+    Freq freq_max;
+
+    rel1 = jinfo->rel1->baserel;
+    rel2 = jinfo->rel2->baserel;
+    var1 = jinfo->rel1->join_key;
+    var2 = jinfo->rel2->join_key;
+
+    elog(NOTICE, "vor allem");
+
+    // examine_variable(root, (Node*) jinfo->rel2->join_key, 0, &vardata);
+    // get_attstatsslot(&sslot, vardata.statsTuple, STATISTIC_KIND_MCV, InvalidOid, 
+    //     ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS);
+
+    examine_variable(root, (Node*) var1, 0, &vardata1);
+    get_attstatsslot(&sslot1, vardata1.statsTuple, STATISTIC_KIND_MCV,
+                    InvalidOid, ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS);
+    
+    elog(NOTICE, "sslot1");
+
+    examine_variable(root, (Node*) var2, 0, &vardata2);
+    get_attstatsslot(&sslot2, vardata2.statsTuple, STATISTIC_KIND_MCV,
+                    InvalidOid, ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS);
+    
+    elog(NOTICE, "sslot2");
+
+    // Datum* join_values = palloc(sizeof(Datum) * Min(sslot1.nvalues, sslot2.nvalues));
+    // float* join_freqs = palloc(sizeof(float) * Min(sslot1.nvalues, sslot2.nvalues));
+    // int joined_value = 0;
+    freq_max = 0;
+
+    elog(NOTICE, "setups");
+
+    for(int i = 0; i < sslot1.nvalues; i++)
+    {
+        for(int j = 0; j < sslot2.nvalues; j++)
+        {
+            Datum mcv1 = sslot1.values[i];
+
+            Oid oid1 = root->simple_rte_array[rel1->relid]->relid;
+            Oid type1 = get_atttype(oid1, var1->varattno);
+            char* v1 = datum_to_string(mcv1, type1);
+            elog(NOTICE, "============================================ value: %s", v1);
+
+            Datum mcv2 = sslot2.values[j];
+
+            Oid oid2 = root->simple_rte_array[rel2->relid]->relid;
+            Oid type2 = get_atttype(oid2, var2->varattno);
+            char* v2 = datum_to_string(mcv1, type2);
+            elog(NOTICE, "============================================ value: %s", v2);
+
+            if(sslot1.values[i] == sslot2.values[j])
+            {
+                elog(ERROR, "HALLO?");
+            }
+            if(sslot1.values[i] == sslot2.values[j])
+            {
+                elog(NOTICE, "innerst loop");
+
+                double freq_tmp = sslot1.numbers[i] * sslot2.numbers[j];
+                elog(NOTICE, "freq_tmp: %f", freq_tmp);
+                elog(NOTICE, "freq_max: %f", freq_max);
+                if(freq_tmp > freq_max)
+                {
+                    freq_max = (Freq)freq_tmp;
+                }
+
+                elog(NOTICE, "debug print");
+
+                // Debug-Ausgabe
+                // char *value_str = datum_to_string(join_values[joined_value], 
+                //                                 vardata1.atttype);
+                // elog(NOTICE, "Join-Wert: %s, Häufigkeit: %f", 
+                //         value_str, join_freqs[joined_value]);
+                // pfree(value_str);
+                
+                elog(NOTICE, "end inner loop");
+
+                break;
+            }
+        }
+    }
+
+    // pfree(join_values);
+    // pfree(join_freqs);
+            
+
+        
+        
+        
+    jinfo->rel1->max_freq = freq_max;
+    jinfo->rel2->max_freq = freq_max;
+    
+    free_attstatsslot(&sslot2);
+    free_attstatsslot(&sslot1);
+
+    ReleaseVariableStats(vardata1);
+    ReleaseVariableStats(vardata2);
+
+}
+*/
 
 /*
  * Makes an relation for ues. Assumes that an UesState
@@ -604,6 +921,8 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
     List*           affected_joinkeys;
     ListCell*       lc_aff;
     UesJoinKey*     affected_joinkey;
+    Freq            f1;
+    Freq            f2;
 
     ues_state = root->join_search_private;
     affected_joinkeys = NIL;
@@ -615,9 +934,18 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
     /**
      * before of all we have to get the affected
      * keys.
+     * 
+     * Assume that rel1 is always the current_intermediate
+     * and rel2 is always the realtion that need to be joined.
      */
-    ues_get_affected_joinkeys(root, &affected_joinkeys, rel2);
+    ues_get_affected_joinkeys(root, &affected_joinkeys, jinfo->rel2->baserel);
 
+    /**
+     * We have to apply the update rules to all
+     * of the affected keys.
+     */
+    f1 = jinfo->rel1->max_freq;
+    f2 = jinfo->rel2->max_freq;
     foreach(lc_aff, affected_joinkeys)
     {
         affected_joinkey = (UesJoinKey*) lfirst(lc_aff);
@@ -627,52 +955,48 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
          * joined_keys list.
          */
         ues_switch_key_in_list(root, affected_joinkey);
-    }
+        
+        /*
+        * b) update the key types. When joining a
+        * primary key on a foregin key the joined
+        * tuple set has no longer a primary key. 
+        * Values from the former primary key can
+        * appear multiple times. This affects our
+        * filter rules when joining two relations
+        * using UES. Since the key is not primary
+        * keying anymore, joins with this key are
+        * no longer filter joins.
+        */
+        ues_change_keytypes(root, affected_joinkey, jinfo->rel1->key_type, jinfo->rel2->key_type);
 
-    /*
-     * b) update the key types. When joining a
-     * primary key on a foregin key the joined
-     * tuple set has no longer a primary key. 
-     * Values from the former primary key can
-     * appear multiple times. This affects our
-     * filter rules when joining two relations
-     * using UES. Since the key is not primary
-     * keying anymore, joins with this key are
-     * no longer filter joins.
-     */
-    if(jinfo->rel1->key_type == KT_PRIMARY &&
-        jinfo->rel2->key_type != KT_PRIMARY)
-    {
-        jinfo->rel1->key_type = KT_FOREIGN;
+        /*
+         * c) update frequencies. Since both max_freq
+         * values are standing for the value which is
+         * the most common, the new maximum frequency 
+         * is the product of both max_freq values.
+         * 
+         * When performing a filter join we dont need
+         * to calculate anything as the max_freq value
+         * of the primary join will be one. We can just
+         * take the Max() of both max_freq values. 
+         */
+        ues_update_frequency(root, affected_joinkey, f1*f2, f1, f2, jinfo);
     }
     
-    if(jinfo->rel2->key_type == KT_PRIMARY &&
-        jinfo->rel1->key_type != KT_PRIMARY)
-    {
-        jinfo->rel2->key_type = KT_FOREIGN;
-    }
+    #ifdef DEBUG
+    ues_print_all_keys(root, ues_state);
+    #endif
 
-    /*
-     * c) update frequencies. Since both max_freq
-     * values are standing for the value which is
-     * the most common, the new maximum frequency 
-     * is the product of both max_freq values.
-     * 
-     * When performing a filter join we dont need
-     * to calculate anything as the max_freq value
-     * of the primary join will be one. We can just
-     * take the Max() of both max_freq values. 
-     */
-    if(jinfo->rel1->key_type == KT_PRIMARY ||
-        jinfo->rel2->key_type == KT_PRIMARY)
-    {
-        jinfo->rel1->max_freq = Max(jinfo->rel1->max_freq, jinfo->rel2->max_freq);
-        jinfo->rel2->max_freq = jinfo->rel1->max_freq;
-    }else
-    {
-        jinfo->rel1->max_freq = jinfo->rel1->max_freq * jinfo->rel2->max_freq;
-        jinfo->rel2->max_freq = jinfo->rel1->max_freq;
-    }
+    // if(jinfo->rel1->key_type == KT_PRIMARY ||
+    //     jinfo->rel2->key_type == KT_PRIMARY)
+    // {
+    //     jinfo->rel1->max_freq = Max(jinfo->rel1->max_freq, jinfo->rel2->max_freq);
+    //     jinfo->rel2->max_freq = jinfo->rel1->max_freq;
+    // }else
+    // {
+    //     jinfo->rel1->max_freq = jinfo->rel1->max_freq * jinfo->rel2->max_freq;
+    //     jinfo->rel2->max_freq = jinfo->rel1->max_freq;
+    // }
     
     /*
      * After performing the steps above
@@ -708,6 +1032,11 @@ ues_make_join_rel(PlannerInfo* root, RelOptInfo* rel1, RelOptInfo* rel2, UesJoin
     ues_state->current_intermediate = join; // this is not fine, it just covers a quick bug
     ues_get_possible_joins(root);
     
+    /**
+     * free list
+     */
+    list_free(affected_joinkeys);
+
     #ifdef DEBUG
     elog(NOTICE, "join: %f", jinfo->upper_bound);
     elog(NOTICE, "rel1: %f", rel1->tuples);
@@ -813,7 +1142,7 @@ ues_join_filters(PlannerInfo* root, RelOptInfo* jrel)
 
             /* 
             * At this point we check if we can join a filter relation.
-            * For that purpose we dirst check if filter_rel1 is already
+            * For that purpose we first check if filter_rel1 is already
             * part of current intermediate. If it is, we gonna check if
             * there is a joinclause with the other filter relation. If
             * so, we do a join.

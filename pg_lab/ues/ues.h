@@ -121,6 +121,13 @@ ues_switch_key_in_list(PlannerInfo* root, UesJoinKey* jkey);
 void
 ues_get_affected_joinkeys(PlannerInfo* root, List** keys, RelOptInfo* rel);
 
+void
+ues_change_keytypes(PlannerInfo* root, UesJoinKey* key_edit, KeyType type_join, KeyType type_ci);
+
+void
+ues_update_frequency(PlannerInfo* root, UesJoinKey* key_edit, Freq freq_new, Freq f1, 
+                        Freq f2, UesJoinInfo* jinfo);
+
 static UpperBound 
 get_upper_bound_new(PlannerInfo* root, UesJoinKey* left_key, UesJoinKey* right_key);
 
@@ -137,6 +144,8 @@ ues_get_jointype(UesJoinKey* key1, UesJoinKey* key2);
 bool
 have_vars_join_relation(PlannerInfo* root, Var* var1, Var* var2);
 
+const char* type_to_string(KeyType type) UNUSED;
+
 /**
  * debug prints
  */
@@ -146,3 +155,5 @@ ues_print_state(PlannerInfo *root, UesState *ues_state) UNUSED;
 static void
 ues_print_joins(PlannerInfo *root, UesState *ues_state) UNUSED;
 
+static void
+ues_print_all_keys(PlannerInfo* root, UesState* ues_state) UNUSED;

@@ -1,20 +1,40 @@
 # determine current database mode
 #config="LOAD 'ues.so'; set ues.enable_ues=on; \n show ues.enable_ues;\n"
 config=""
+configA=""
 
 iterations=$1 # number of iterations per experiment
 eval_dir=$2 # has to be the evaluation folder
-#ues = $3 # ues yes or no
+use_ues=$3 # ues yes or no
+mode_analyze=$4 # use EXPLAIN statement or not
 
-case $3 in
-	ues)
-    	config+="LOAD 'ues.so'; set ues.enable_ues=on; \n show ues.enable_ues;\n"
+case $use_ues in
+	"ues")
+    	#config+="LOAD 'ues.so'; set ues.enable_ues=on; \n show ues.enable_ues;\n"
+		echo -n "HAAAAAAAAAALO"
+		#configA+="LOAD 'ues.so'; set ues.enable_ues=on; \n set enable_nestloop=off; \n set enable_mergejoin=off;"
+		configA+="LOAD 'ues.so'; set ues.enable_ues=on; "
 		;;
 
-  	noues)
-		config+=""
+  	"noues")
+	echo -n "TEEEEEEEEEEEEEEEST"
+		configA+="test"
 		;;
 
+	*)
+		echo -n "missing attribute"
+		exit
+esac
+
+case $mode_analyze in
+	analyze)
+		config+="\n\o $eval_dir/queries-outp/$curr_iter/$file.json \nEXPLAIN(Analyze, Format JSON) \n"
+		;;
+
+	default)
+		config+="\n\o $eval_dir/queries-outp/$curr_iter/$file.json \n"
+		;;
+		
 	*)
 		echo -n "missing attribute"
 		exit
@@ -44,20 +64,7 @@ for ((curr_iter=0; curr_iter < $iterations; curr_iter++)); do
 	# prepare sql scripts for execution by defining an output file and defining print stats
 	cd $eval_dir/queries
 	for file in *.sql; do 
-		
-		case $4 in
-		analyze)
-			config+="\n\o $eval_dir/queries-outp/$curr_iter/$file.json \nEXPLAIN(Analyze, Format JSON) "
-			;;
-
-		default)
-			config+="\n\o $eval_dir/queries-outp/$curr_iter/$file.json \n"
-			;;
-			
-		*)
-			echo -n "missing attribute"
-			exit
-		esac
+		config="\n$configA\o $eval_dir/queries-outp/$curr_iter/$file.json \nEXPLAIN(Analyze, Format JSON) \n"
 		
 		printf "$config\n" | cat - $file > tmp &&
 		mv tmp $eval_dir/queries-prep/$file &&
@@ -85,6 +92,6 @@ for ((curr_iter=0; curr_iter < $iterations; curr_iter++)); do
 
 done
 
-rm $eval_dir/tmp
+#rm $eval_dir/tmp
 
 exit
